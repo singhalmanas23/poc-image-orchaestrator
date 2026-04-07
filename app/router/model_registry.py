@@ -1,0 +1,176 @@
+"""
+Model selection logic based on the research document.
+Maps intent signals → best model for the job.
+"""
+
+from app.graph.state import OrchestratorState
+
+# Model catalog with capabilities and metadata
+MODELS = {
+    # --- Generation models ---
+    "flux-2-pro": {
+        "provider": "fal",
+        "task": "generate",
+        "cost_per_image": 0.055,
+        "latency_range": "5-10s",
+        "strengths": ["photorealistic", "product_shot", "quality"],
+        "quality_rank": 1,
+        "speed_rank": 3,
+        "cost_rank": 3,
+    },
+    "imagen-4-fast": {
+        "provider": "google",
+        "task": "generate",
+        "cost_per_image": 0.02,
+        "latency_range": "2.7s",
+        "strengths": ["photorealistic", "product_shot", "speed", "cost"],
+        "quality_rank": 3,
+        "speed_rank": 1,
+        "cost_rank": 1,
+    },
+    "ideogram-3": {
+        "provider": "ideogram",
+        "task": "generate",
+        "cost_per_image": 0.06,
+        "latency_range": "15-30s",
+        "strengths": ["text_rendering", "artistic"],
+        "quality_rank": 2,
+        "speed_rank": 5,
+        "cost_rank": 4,
+    },
+    "recraft-v4": {
+        "provider": "recraft",
+        "task": "generate",
+        "cost_per_image": 0.04,
+        "latency_range": "few secs",
+        "strengths": ["vector", "text_rendering", "svg"],
+        "quality_rank": 4,
+        "speed_rank": 2,
+        "cost_rank": 2,
+    },
+    "gpt-image-1.5": {
+        "provider": "openai",
+        "task": "generate",
+        "cost_per_image": 0.034,
+        "latency_range": "5-15s",
+        "strengths": ["photorealistic", "product_shot"],
+        "quality_rank": 1,
+        "speed_rank": 3,
+        "cost_rank": 3,
+    },
+    # --- Editing models ---
+    "flux-kontext-pro": {
+        "provider": "fal",
+        "task": "edit",
+        "cost_per_image": 0.10,
+        "latency_range": "3-5s",
+        "strengths": [
+            "color_change",
+            "background",
+            "object_modify",
+            "style_transfer",
+            "instruction_based",
+        ],
+        "quality_rank": 1,
+        "speed_rank": 1,
+        "cost_rank": 3,
+    },
+    "flux-fill-pro": {
+        "provider": "fal",
+        "task": "edit",
+        "cost_per_image": 0.05,
+        "latency_range": "fast",
+        "strengths": ["inpaint", "mask_based", "precision"],
+        "quality_rank": 1,
+        "speed_rank": 2,
+        "cost_rank": 2,
+    },
+    "imagen-4-edit": {
+        "provider": "google",
+        "task": "edit",
+        "cost_per_image": 0.02,
+        "latency_range": "5-10s",
+        "strengths": [
+            "color_change",
+            "background",
+            "object_modify",
+            "cost",
+            "auto_mask",
+        ],
+        "quality_rank": 3,
+        "speed_rank": 3,
+        "cost_rank": 1,
+    },
+    "ideogram-3-edit": {
+        "provider": "ideogram",
+        "task": "edit",
+        "cost_per_image": 0.05,
+        "latency_range": "15-30s",
+        "strengths": ["text_edit", "inpaint"],
+        "quality_rank": 2,
+        "speed_rank": 4,
+        "cost_rank": 3,
+    },
+}
+
+
+def select_generation_model(state: OrchestratorState) -> dict:
+    """Pick the best generation model based on intent signals."""
+    priority = state.get("priority", "quality")
+    needs_text = state.get("needs_text_rendering", False)
+    needs_vector = state.get("needs_svg_vector", False)
+    style = state.get("style", "photorealistic")
+
+    # Rule 1: Vector/SVG → Recraft V4 (only model that outputs real SVG)
+    if needs_vector:
+        return _pick("recraft-v4", "Needs vector/SVG output — only Recraft V4 generates real SVGs")
+
+    # Rule 2: Text on product → Ideogram 3.0 (90-95% text accuracy)
+    if needs_text:
+        return _pick("ideogram-3", "Text rendering needed — Ideogram 3.0 has 90-95% text accuracy")
+
+    # Rule 3: Priority-based selection for photorealistic/product shots
+    if priority == "cost":
+        return _pick("imagen-4-fast", "Cost priority — Imagen 4 Fast at $0.02/image is cheapest quality option")
+
+    if priority == "speed":
+        return _pick("imagen-4-fast", "Speed priority — Imagen 4 Fast has ~2.7s latency")
+
+    # Default: quality priority
+    return _pick("flux-2-pro", "Quality priority — FLUX.2 Pro has top Elo rating (1,265)")
+
+
+def select_editing_model(state: OrchestratorState) -> dict:
+    """Pick the best editing model based on edit type and signals."""
+    priority = state.get("priority", "quality")
+    edit_type = state.get("edit_type", "object_modify")
+    needs_mask = state.get("needs_mask", False)
+    needs_text = state.get("needs_text_rendering", False)
+
+    # Rule 1: Text editing → Ideogram 3.0
+    if edit_type == "text_edit" or needs_text:
+        return _pick("ideogram-3-edit", "Text editing — Ideogram 3.0 has industry-leading text accuracy")
+
+    # Rule 2: Needs mask / precision inpainting → FLUX Fill Pro
+    if needs_mask or edit_type == "inpaint":
+        return _pick("flux-fill-pro", "Precision edit requiring mask — FLUX Fill Pro is best mask-based inpainter")
+
+    # Rule 3: Budget editing → Imagen 4
+    if priority == "cost":
+        return _pick("imagen-4-edit", "Cost priority — Imagen 4 at $0.02/edit with auto-mask detection")
+
+    # Default: instruction-based editing → FLUX Kontext Pro
+    return _pick(
+        "flux-kontext-pro",
+        "Instruction-based edit — FLUX Kontext Pro, no mask needed, 3-5s, best local edit precision",
+    )
+
+
+def _pick(model_id: str, reasoning: str) -> dict:
+    model = MODELS[model_id]
+    return {
+        "selected_model": model_id,
+        "selected_provider": model["provider"],
+        "selection_reasoning": reasoning,
+        "cost": model["cost_per_image"],
+    }
