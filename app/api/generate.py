@@ -12,6 +12,7 @@ router = APIRouter()
 class GenerateRequest(BaseModel):
     prompt: str
     priority: Literal["quality", "speed", "cost"] = "quality"
+    transparent_background: bool = True
 
 
 class OrchestratorResponse(BaseModel):
@@ -24,6 +25,7 @@ class OrchestratorResponse(BaseModel):
     optimized_prompt: Optional[str] = None
     cost: Optional[float] = None
     latency_ms: Optional[int] = None
+    transparent_background: Optional[bool] = None
     error: Optional[str] = None
 
 
@@ -35,6 +37,7 @@ async def generate_image(req: GenerateRequest):
         "user_prompt": req.prompt,
         "input_image_url": None,
         "priority": req.priority,
+        "transparent_background": req.transparent_background,
     }
 
     result = await orchestrator.ainvoke(initial_state)
@@ -56,4 +59,5 @@ async def generate_image(req: GenerateRequest):
         optimized_prompt=result.get("optimized_prompt"),
         cost=result.get("cost"),
         latency_ms=result.get("latency_ms"),
+        transparent_background=result.get("transparent_background"),
     )

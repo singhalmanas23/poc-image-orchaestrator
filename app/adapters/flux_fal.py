@@ -43,7 +43,7 @@ class FluxFalAdapter(BaseAdapter):
             endpoint,
             arguments={
                 "prompt": prompt,
-                "image_size": kwargs.get("image_size", "landscape_16_9"),
+                "image_size": kwargs.get("image_size", "square_hd"),
                 "num_images": 1,
                 "safety_tolerance": "5",
             },
@@ -57,6 +57,23 @@ class FluxFalAdapter(BaseAdapter):
             cost=self.COST_MAP[model_id],
             latency_ms=latency_ms,
             model_id=model_id,
+            provider="fal",
+        )
+
+    async def remove_background(self, image_url: str) -> AdapterResult:
+        """Run rembg via fal to produce a PNG with a real alpha channel."""
+        start = time.time()
+        result = await fal_client.run_async(
+            "fal-ai/imageutils/rembg",
+            arguments={"image_url": image_url},
+        )
+        latency_ms = int((time.time() - start) * 1000)
+        out_url = result["image"]["url"]
+        return AdapterResult(
+            image_url=out_url,
+            cost=0.001,
+            latency_ms=latency_ms,
+            model_id="rembg",
             provider="fal",
         )
 

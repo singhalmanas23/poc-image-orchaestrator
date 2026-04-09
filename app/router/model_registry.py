@@ -119,6 +119,7 @@ def select_generation_model(state: OrchestratorState) -> dict:
     priority = state.get("priority", "quality")
     needs_text = state.get("needs_text_rendering", False)
     needs_vector = state.get("needs_svg_vector", False)
+    transparent_bg = state.get("transparent_background", False)
     style = state.get("style", "photorealistic")
 
     # Rule 1: Vector/SVG → Recraft V4 (only model that outputs real SVG)
@@ -137,7 +138,17 @@ def select_generation_model(state: OrchestratorState) -> dict:
         return _pick("imagen-4-fast", "Speed priority — Imagen 4 Fast has ~2.7s latency")
 
     # Default: quality priority
-    return _pick("flux-2-pro", "Quality priority — FLUX.2 Pro has top Elo rating (1,265)")
+    base = _pick("flux-2-pro", "Quality priority — FLUX.2 Pro has top Elo rating (1,265)")
+
+    # Note: transparent_background is handled as a post-processing pass in
+    # generate_image_node (rembg via fal). It does not change model selection here
+    # because the only raster model with native alpha (gpt-image-1) requires a
+    # verified OpenAI org. transparent_bg is read here only to annotate reasoning.
+    if transparent_bg:
+        base["selection_reasoning"] = (
+            base["selection_reasoning"] + " + rembg post-processing for transparent background"
+        )
+    return base
 
 
 def select_editing_model(state: OrchestratorState) -> dict:
@@ -147,9 +158,14 @@ def select_editing_model(state: OrchestratorState) -> dict:
     needs_mask = state.get("needs_mask", False)
     needs_text = state.get("needs_text_rendering", False)
 
-    # Rule 1: Text editing → Ideogram 3.0
-    if edit_type == "text_edit" or needs_text:
-        return _pick("ideogram-3-edit", "Text editing — Ideogram 3.0 has industry-leading text accuracy")
+    # Rule 1: Text editing WITH a mask → Ideogram 3.0 (industry-leading text accuracy, mask-based)
+    # Without a mask Ideogram's edit endpoint will not accept the request, so fall through
+    # to FLUX Kontext which handles instruction-based text edits well enough.
+    if (edit_type == "text_edit" or needs_text) and needs_mask:
+        return _pick(
+            "ideogram-3-edit",
+            "Text editing with mask — Ideogram 3.0 has industry-leading text accuracy",
+        )
 
     # Rule 2: Needs mask / precision inpainting → FLUX Fill Pro
     if needs_mask or edit_type == "inpaint":
@@ -160,10 +176,13 @@ def select_editing_model(state: OrchestratorState) -> dict:
         return _pick("imagen-4-edit", "Cost priority — Imagen 4 at $0.02/edit with auto-mask detection")
 
     # Default: instruction-based editing → FLUX Kontext Pro
-    return _pick(
-        "flux-kontext-pro",
-        "Instruction-based edit — FLUX Kontext Pro, no mask needed, 3-5s, best local edit precision",
-    )
+    # Also handles text edits without a mask (Kontext renders text reasonably well).
+    reasoning = "Instruction-based edit — FLUX Kontext Pro, no mask needed, 3-5s, best local edit precision"
+    if edit_type == "text_edit" or needs_text:
+        reasoning = (
+            "Text edit without mask — Ideogram requires a mask, falling back to FLUX Kontext Pro for instruction-based text editing"
+        )
+    return _pick("flux-kontext-pro", reasoning)
 
 
 def _pick(model_id: str, reasoning: str) -> dict:

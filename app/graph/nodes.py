@@ -45,16 +45,53 @@ async def generate_image_node(state: OrchestratorState) -> dict:
     model_id = state["selected_model"]
     provider = state["selected_provider"]
     prompt = state.get("optimized_prompt", state["user_prompt"])
+    transparent_bg = bool(state.get("transparent_background", False))
 
     adapter = _get_adapter(provider)
 
     try:
-        result = await adapter.generate(prompt=prompt, model_id=model_id)
+        result = await adapter.generate(
+            prompt=prompt,
+            model_id=model_id,
+            transparent_background=transparent_bg,
+        )
+
+        out_url = result.image_url
+        total_cost = result.cost
+        total_latency = result.latency_ms
+        applied_alpha = False
+
+        # Post-process: rembg via fal for a real alpha channel.
+        # Skip if the model already produced alpha (e.g. gpt-image-1 with background=transparent)
+        natively_alpha = bool((result.metadata or {}).get("transparent_background"))
+        if transparent_bg and not natively_alpha:
+            try:
+                fal = FluxFalAdapter()
+                rembg = await fal.remove_background(out_url)
+                out_url = rembg.image_url
+                total_cost = (total_cost or 0) + (rembg.cost or 0)
+                total_latency = (total_latency or 0) + (rembg.latency_ms or 0)
+                applied_alpha = True
+            except Exception as e:
+                # Soft-fail: keep original image but mark transparent_background False
+                return {
+                    "output_image_url": out_url,
+                    "image_id": f"img_{uuid.uuid4().hex[:12]}",
+                    "cost": total_cost,
+                    "latency_ms": total_latency,
+                    "transparent_background": False,
+                    "selection_reasoning": (
+                        (state.get("selection_reasoning") or "")
+                        + f" — rembg failed: {e}"
+                    ),
+                }
+
         return {
-            "output_image_url": result.image_url,
+            "output_image_url": out_url,
             "image_id": f"img_{uuid.uuid4().hex[:12]}",
-            "cost": result.cost,
-            "latency_ms": result.latency_ms,
+            "cost": total_cost,
+            "latency_ms": total_latency,
+            "transparent_background": applied_alpha or natively_alpha,
         }
     except Exception as e:
         return {"error": f"Generation failed ({model_id}): {str(e)}"}

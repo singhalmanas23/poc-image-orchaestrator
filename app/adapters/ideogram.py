@@ -58,34 +58,16 @@ class IdeogramAdapter(BaseAdapter):
         mask_url: Optional[str] = None,
         **kwargs,
     ) -> AdapterResult:
-        start = time.time()
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            payload = {
-                "image_request": {
-                    "prompt": instruction,
-                    "model": "V_3",
-                    "image_url": image_url,
-                }
-            }
-            if mask_url:
-                payload["image_request"]["mask_url"] = mask_url
-
-            response = await client.post(
-                f"{self.BASE_URL}/edit",
-                headers=self._get_headers(),
-                json=payload,
+        # Ideogram's /edit endpoint expects multipart/form-data with the source image AND a
+        # mask file uploaded as binary — it is mask-based inpainting, not instruction-based
+        # editing. Implementing it requires downloading the image, generating/accepting a mask,
+        # and posting multipart. Until that's wired the router should not pick this path; it
+        # falls back to FLUX Kontext for instruction-based text edits.
+        if not mask_url:
+            raise NotImplementedError(
+                "Ideogram edit requires a mask (mask-based inpainting). "
+                "Use FLUX Kontext for instruction-based edits."
             )
-            response.raise_for_status()
-            data = response.json()
-
-        latency_ms = int((time.time() - start) * 1000)
-        image_url = data["data"][0]["url"]
-
-        return AdapterResult(
-            image_url=image_url,
-            cost=0.05,
-            latency_ms=latency_ms,
-            model_id="ideogram-3-edit",
-            provider="ideogram",
+        raise NotImplementedError(
+            "Ideogram edit (multipart/form-data with image + mask) is not yet implemented."
         )

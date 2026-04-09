@@ -1,0 +1,160 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --grain-opacity: 0.035;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-mono);
+  font-feature-settings: "ss01", "ss02", "cv11";
+  -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(1200px 700px at 20% -10%, rgba(244, 163, 64, 0.08), transparent 60%),
+    radial-gradient(900px 600px at 110% 110%, rgba(244, 163, 64, 0.05), transparent 55%),
+    #0a0a0c;
+}
+
+/* Subtle film grain overlay across the whole page */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  opacity: var(--grain-opacity);
+  mix-blend-mode: overlay;
+}
+
+/* Faint grid backdrop for the canvas */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(237, 230, 211, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(237, 230, 211, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.bg-grid-fine {
+  background-image:
+    linear-gradient(rgba(237, 230, 211, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(237, 230, 211, 0.05) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+/* Alpha-channel checker pattern, dark variant tuned to the palette */
+.bg-checker {
+  background-color: #16161b;
+  background-image:
+    linear-gradient(45deg, #1f1f26 25%, transparent 25%),
+    linear-gradient(-45deg, #1f1f26 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1f1f26 75%),
+    linear-gradient(-45deg, transparent 75%, #1f1f26 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0px;
+}
+
+/* Refined scrollbar */
+.scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll::-webkit-scrollbar-thumb {
+  background: rgba(237, 230, 211, 0.1);
+  border-radius: 999px;
+}
+.scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(244, 163, 64, 0.4);
+}
+
+/* Saffron focus ring */
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px #0a0a0c,
+    0 0 0 2px #f4a340;
+}
+
+/* Marquee underline used in column headers */
+.rule {
+  position: relative;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(237, 230, 211, 0.3) 14%,
+    rgba(237, 230, 211, 0.3) 86%,
+    transparent
+  );
+}
+
+/* Tiny corner crosshairs for technical-instrument feel */
+.crosshair {
+  position: relative;
+}
+.crosshair::before,
+.crosshair::after,
+.crosshair > .ch-tl,
+.crosshair > .ch-tr,
+.crosshair > .ch-bl,
+.crosshair > .ch-br {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: rgba(237, 230, 211, 0.32);
+  content: "";
+}
+.crosshair::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+.crosshair::after {
+  top: -1px;
+  right: -1px;
+  border-top: 1px solid;
+  border-right: 1px solid;
+}
+.crosshair > .ch-bl {
+  bottom: -1px;
+  left: -1px;
+  border-bottom: 1px solid rgba(237, 230, 211, 0.32);
+  border-left: 1px solid rgba(237, 230, 211, 0.32);
+}
+.crosshair > .ch-br {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1px solid rgba(237, 230, 211, 0.32);
+  border-right: 1px solid rgba(237, 230, 211, 0.32);
+}
+
+/* Type utilities */
+.label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: #9a9281;
+}
+
+.display {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  font-variation-settings: "opsz" 144;
+  letter-spacing: -0.04em;
+  line-height: 0.9;
+}

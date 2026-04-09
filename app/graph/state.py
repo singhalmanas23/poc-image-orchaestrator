@@ -7,6 +7,7 @@ class OrchestratorState(TypedDict, total=False):
     user_prompt: str
     input_image_url: Optional[str]  # For editing: URL or base64 of source image
     priority: Literal["quality", "speed", "cost"]
+    transparent_background: Optional[bool]  # If True, prefer a model that outputs alpha
 
     # --- Brain output (intent analysis) ---
     task_type: Optional[Literal["generate", "edit"]]

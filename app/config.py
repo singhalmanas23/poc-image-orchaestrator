@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Storage
     image_storage_dir: str = "generated_images"
 
+    # Public base URL the API serves at — used to build URLs for locally-stored images
+    api_base_url: str = "http://localhost:8000"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
