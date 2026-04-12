@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import {
+  fetchPromptSuggestions,
   imageUrlOf,
   modelOf,
   providerOf,
@@ -17,6 +18,8 @@ interface Props {
   selected: OrchestratorImage | null;
   prompt: string;
   setPrompt: (s: string) => void;
+  submittedPrompt: string;
+  generateTrigger: number;
   priority: Priority;
   setPriority: (p: Priority) => void;
   transparentBg: boolean;
@@ -30,6 +33,8 @@ export function ComposePanel({
   selected,
   prompt,
   setPrompt,
+  submittedPrompt,
+  generateTrigger,
   priority,
   setPriority,
   transparentBg,
@@ -39,6 +44,10 @@ export function ComposePanel({
   error,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const [selectedSuggestion, setSelectedSuggestion] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
 
   // ↵ to generate, ⌘↵ ignored here (left for refine)
   useEffect(() => {
@@ -59,6 +68,54 @@ export function ComposePanel({
   const provider = providerOf(selected);
   const reasoning = reasoningOf(selected);
   const showAlpha = !!selected?.transparent_background;
+
+  useEffect(() => {
+    const key = submittedPrompt.trim();
+    if (!key || generating) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      setLoadingSuggestions(true);
+      setSuggestionsError(null);
+      setSuggestions([]);
+      setSelectedSuggestion("");
+
+      try {
+        const res = await fetchPromptSuggestions({
+          prompt: key,
+          count: 5,
+        });
+
+        if (cancelled) return;
+        setSuggestions(Array.isArray(res.suggestions) ? res.suggestions : []);
+        if (!res.success && res.error) setSuggestionsError(res.error);
+      } catch (e) {
+        if (cancelled) return;
+        setSuggestions([]);
+        setSuggestionsError(
+          (e as Error).message || "Failed to load suggestions",
+        );
+      } finally {
+        if (!cancelled) setLoadingSuggestions(false);
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [generateTrigger, submittedPrompt, generating]);
+
+  const applySuggestion = (value: string) => {
+    if (!value) return;
+    const base = prompt.trim();
+    const next = base ? `${base}, ${value}` : value;
+    setPrompt(next);
+    setSelectedSuggestion("");
+    taRef.current?.focus();
+  };
 
   return (
     <section className="flex min-h-0 flex-col border-r border-line/80 bg-ink-900/20">
@@ -162,7 +219,9 @@ export function ComposePanel({
                 <Readout k="provider" v={provider ?? "—"} />
                 <Readout
                   k="cost"
-                  v={selected.cost != null ? `$${selected.cost.toFixed(3)}` : "—"}
+                  v={
+                    selected.cost != null ? `$${selected.cost.toFixed(3)}` : "—"
+                  }
                 />
                 <Readout
                   k="latency"
@@ -212,6 +271,47 @@ export function ComposePanel({
               ! {error}
             </p>
           )}
+
+          <div className="mt-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="label">image improvements · 02.b</span>
+              <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
+                {loadingSuggestions
+                  ? "loading…"
+                  : `${suggestions.length} options`}
+              </span>
+            </div>
+
+            <select
+              value={selectedSuggestion}
+              onChange={(e) => {
+                const value = e.target.value;
+                setSelectedSuggestion(value);
+                applySuggestion(value);
+              }}
+              disabled={loadingSuggestions || suggestions.length === 0}
+              className="focus-ring w-full border border-line/80 bg-ink-700/60 px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-bone outline-none transition hover:border-saffron disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="">
+                {loadingSuggestions
+                  ? "generating suggestions from submitted prompt…"
+                  : suggestions.length === 0
+                    ? "generate once to get 4-5 prompt improvements"
+                    : "select an improvement to append to prompt…"}
+              </option>
+              {suggestions.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+
+            {suggestionsError && (
+              <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-saffron">
+                {suggestionsError}
+              </p>
+            )}
+          </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
@@ -275,15 +375,7 @@ function AlphaToggle({
   );
 }
 
-function Readout({
-  k,
-  v,
-  accent,
-}: {
-  k: string;
-  v: string;
-  accent?: boolean;
-}) {
+function Readout({ k, v, accent }: { k: string; v: string; accent?: boolean }) {
   return (
     <div className="min-w-0">
       <div className="label">{k}</div>
