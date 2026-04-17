@@ -1,5 +1,19 @@
 export type Priority = "quality" | "speed" | "cost";
 
+export interface PromptSuggestionsRequest {
+  prompt: string;
+  count?: 4 | 5;
+  context?: string | null;
+}
+
+export interface PromptSuggestionsResponse {
+  success: boolean;
+  base_prompt: string;
+  suggestions: string[];
+  reasoning?: string | null;
+  error?: string | null;
+}
+
 export interface OrchestratorImage {
   success?: boolean;
   image_url?: string | null;

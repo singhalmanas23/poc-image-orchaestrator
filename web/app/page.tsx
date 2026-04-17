@@ -3,12 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 
-import {
-  editImage,
-  fetchHistory,
-  generateImage,
-  imageUrlOf,
-} from "@/lib/api";
+import { editImage, fetchHistory, generateImage, imageUrlOf } from "@/lib/api";
 import type { OrchestratorImage, Priority } from "@/lib/types";
 import { ExplorePanel } from "@/components/explore-panel";
 import { ComposePanel } from "@/components/compose-panel";
@@ -28,6 +23,8 @@ export default function Page() {
 
   const [instruction, setInstruction] = useState("");
   const [editPriority, setEditPriority] = useState<Priority>("quality");
+  const [lastSubmittedPrompt, setLastSubmittedPrompt] = useState("");
+  const [generateTrigger, setGenerateTrigger] = useState(0);
 
   const [clock, setClock] = useState("");
 
@@ -61,14 +58,20 @@ export default function Page() {
 
   const onGenerate = useCallback(async () => {
     if (!prompt.trim() || generating) return;
+    const submittedPrompt = prompt.trim();
+    setLastSubmittedPrompt(submittedPrompt);
+    setGenerateTrigger((n) => n + 1);
     setError(null);
     setGenerating(true);
     try {
-      const res = await generateImage(prompt.trim(), priority, transparentBg);
+      const res = await generateImage(submittedPrompt, priority, transparentBg);
       if (res.error) {
         setError(res.error);
       } else {
-        setSelected(res);
+        setSelected({
+          ...res,
+          user_prompt: submittedPrompt,
+        });
         await refreshHistory();
       }
     } catch (e) {
@@ -153,6 +156,8 @@ export default function Page() {
         <ComposePanel
           selected={selected}
           prompt={prompt}
+          submittedPrompt={lastSubmittedPrompt}
+          generateTrigger={generateTrigger}
           setPrompt={setPrompt}
           priority={priority}
           setPriority={setPriority}
