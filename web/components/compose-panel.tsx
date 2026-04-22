@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import {
@@ -10,7 +10,7 @@ import {
   providerOf,
   reasoningOf,
 } from "@/lib/api";
-import type { OrchestratorImage, Priority } from "@/lib/types";
+import type { OrchestratorImage, Priority, ViewFrame } from "@/lib/types";
 import { ChannelHeader } from "./channel-header";
 import { PrioritySwitch } from "./priority-switch";
 
@@ -24,6 +24,8 @@ interface Props {
   setPriority: (p: Priority) => void;
   transparentBg: boolean;
   setTransparentBg: (v: boolean) => void;
+  multiView: boolean;
+  setMultiView: (v: boolean) => void;
   onGenerate: () => void;
   generating: boolean;
   error: string | null;
@@ -39,6 +41,8 @@ export function ComposePanel({
   setPriority,
   transparentBg,
   setTransparentBg,
+  multiView,
+  setMultiView,
   onGenerate,
   generating,
   error,
@@ -68,6 +72,15 @@ export function ComposePanel({
   const provider = providerOf(selected);
   const reasoning = reasoningOf(selected);
   const showAlpha = !!selected?.transparent_background;
+  const validViews = useMemo(
+    () =>
+      (selected?.views ?? []).filter(
+        (v): v is ViewFrame & { image_url: string } =>
+          !!v?.image_url && !v?.error,
+      ),
+    [selected],
+  );
+  const hasMultiView = validViews.length > 1;
 
   useEffect(() => {
     const key = submittedPrompt.trim();
@@ -139,7 +152,23 @@ export function ComposePanel({
           <CornerMarks />
 
           <AnimatePresence mode="wait">
-            {url && !generating && (
+            {hasMultiView && !generating && (
+              <motion.div
+                key={`views-${selected?.image_id ?? "x"}`}
+                initial={{ opacity: 0, scale: 1.02 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+                className="absolute inset-0"
+              >
+                <Viewer360
+                  frames={validViews}
+                  alt={selected?.user_prompt ?? "generated views"}
+                />
+              </motion.div>
+            )}
+
+            {!hasMultiView && url && !generating && (
               <motion.div
                 key={url}
                 initial={{ opacity: 0, scale: 1.02 }}
@@ -317,6 +346,7 @@ export function ComposePanel({
             <div className="flex flex-wrap items-center gap-3">
               <PrioritySwitch value={priority} onChange={setPriority} />
               <AlphaToggle value={transparentBg} onChange={setTransparentBg} />
+              <MultiViewToggle value={multiView} onChange={setMultiView} />
             </div>
             <button
               disabled={!prompt.trim() || generating}
@@ -334,6 +364,44 @@ export function ComposePanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function MultiViewToggle({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!value)}
+      className="focus-ring group flex items-center gap-2 border border-line/80 px-2 py-1 transition hover:border-saffron"
+      aria-pressed={value}
+      title="Generate 8 angles for a 360° turntable view (8× cost)"
+    >
+      <span className="label">360°</span>
+      <span
+        className={`relative inline-flex h-3.5 w-7 items-center border ${
+          value ? "border-saffron bg-saffron/20" : "border-line bg-ink-700"
+        }`}
+      >
+        <span
+          className={`absolute top-[1px] h-[10px] w-[10px] transition-all ${
+            value ? "left-[15px] bg-saffron" : "left-[1px] bg-bone-mute"
+          }`}
+        />
+      </span>
+      <span
+        className={`font-mono text-[10px] uppercase tracking-widest ${
+          value ? "text-saffron" : "text-bone-mute"
+        }`}
+      >
+        {value ? "on" : "off"}
+      </span>
+    </button>
   );
 }
 
@@ -430,6 +498,187 @@ function RoutingTrace() {
           {s}
         </motion.div>
       ))}
+    </div>
+  );
+}
+
+/** Drag-to-rotate 360° turntable viewer over a fixed set of angle frames. */
+function Viewer360({
+  frames,
+  alt,
+}: {
+  frames: Array<ViewFrame & { image_url: string }>;
+  alt: string;
+}) {
+  const [index, setIndex] = useState(0);
+  const [spinning, setSpinning] = useState(false);
+  const dragRef = useRef<{
+    startX: number;
+    startIndex: number;
+    pointerId: number;
+  } | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+
+  // Preload every frame so dragging is instant
+  useEffect(() => {
+    frames.forEach((f) => {
+      const img = new Image();
+      img.src = f.image_url;
+    });
+  }, [frames]);
+
+  const advance = useCallback(
+    (delta: number) => {
+      setIndex((i) => (i + delta + frames.length) % frames.length);
+    },
+    [frames.length],
+  );
+
+  // ← / → arrow keys to step when the stage has focus
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        advance(1);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        advance(-1);
+      }
+    };
+    el.addEventListener("keydown", onKey);
+    return () => el.removeEventListener("keydown", onKey);
+  }, [advance]);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (spinning) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = {
+      startX: e.clientX,
+      startIndex: index,
+      pointerId: e.pointerId,
+    };
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // one full rotation per canvas width feels right
+    const stepPx = Math.max(40, rect.width / frames.length);
+    const delta = Math.round((e.clientX - drag.startX) / stepPx);
+    const next =
+      (((drag.startIndex - delta) % frames.length) + frames.length) %
+      frames.length;
+    setIndex(next);
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === e.pointerId) {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      dragRef.current = null;
+    }
+  };
+
+  // one-shot auto-spin
+  useEffect(() => {
+    if (!spinning) return;
+    let cancelled = false;
+    let i = index;
+    const start = i;
+    const tick = () => {
+      if (cancelled) return;
+      i = (i + 1) % frames.length;
+      setIndex(i);
+      if (i === start) {
+        setSpinning(false);
+        return;
+      }
+      window.setTimeout(tick, 90);
+    };
+    window.setTimeout(tick, 90);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spinning]);
+
+  const current = frames[index];
+
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      <div
+        ref={stageRef}
+        tabIndex={0}
+        role="slider"
+        aria-label="360 degree view"
+        aria-valuemin={0}
+        aria-valuemax={frames.length - 1}
+        aria-valuenow={index}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        className="relative flex-1 cursor-ew-resize touch-none select-none outline-none focus-visible:ring-1 focus-visible:ring-saffron/60"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={current.image_url}
+          alt={`${alt} — ${current.angle ?? `${current.degrees ?? 0}°`}`}
+          draggable={false}
+          className="h-full w-full object-contain"
+        />
+
+        {/* overlay: angle readout + spin button */}
+        <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-2">
+          <span className="pointer-events-auto border border-line/80 bg-ink-900/80 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-saffron backdrop-blur">
+            {current.degrees ?? 0}°
+          </span>
+          <span className="pointer-events-auto border border-line/60 bg-ink-900/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-bone-dim backdrop-blur">
+            drag · ← →
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setSpinning((s) => !s)}
+          className="focus-ring absolute right-2 top-2 border border-line/80 bg-ink-900/80 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-bone backdrop-blur transition hover:border-saffron hover:text-saffron"
+        >
+          {spinning ? "stop" : "spin"}
+        </button>
+      </div>
+
+      {/* thumbnail strip */}
+      <div className="flex items-stretch gap-1 border-t border-line/60 bg-ink-900/60 p-1.5">
+        {frames.map((f, i) => (
+          <button
+            key={`${f.degrees ?? i}-${i}`}
+            type="button"
+            onClick={() => {
+              setSpinning(false);
+              setIndex(i);
+            }}
+            title={`${f.angle ?? ""} (${f.degrees ?? 0}°)`}
+            className={`relative flex-1 overflow-hidden border transition ${
+              i === index
+                ? "border-saffron"
+                : "border-line/60 opacity-60 hover:opacity-100"
+            }`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={f.image_url}
+              alt=""
+              draggable={false}
+              className="aspect-square w-full object-cover"
+            />
+            <span className="absolute bottom-0.5 right-0.5 bg-ink-900/80 px-1 font-mono text-[8px] tracking-widest text-bone-dim">
+              {f.degrees ?? 0}°
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

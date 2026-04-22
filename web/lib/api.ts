@@ -1,4 +1,5 @@
 import type {
+  EditProbesResponse,
   HistoryResponse,
   OrchestratorImage,
   Priority,
@@ -27,6 +28,8 @@ export async function generateImage(
   prompt: string,
   priority: Priority,
   transparentBackground: boolean,
+  multiView: boolean = false,
+  numViews: number = 8,
 ): Promise<OrchestratorImage> {
   return jsonFetch<OrchestratorImage>("/api/generate", {
     method: "POST",
@@ -34,6 +37,8 @@ export async function generateImage(
       prompt,
       priority,
       transparent_background: transparentBackground,
+      multi_view: multiView,
+      num_views: numViews,
     }),
   });
 }
@@ -66,6 +71,21 @@ export async function fetchPromptSuggestions(args: {
       count: args.count ?? 5,
       context: args.context ?? null,
     }),
+  });
+}
+
+export async function fetchEditProbes(args: {
+  prompt: string;
+  count?: number;
+  signal?: AbortSignal;
+}): Promise<EditProbesResponse> {
+  return jsonFetch<EditProbesResponse>("/api/edit-probes", {
+    method: "POST",
+    body: JSON.stringify({
+      prompt: args.prompt,
+      count: args.count ?? 4,
+    }),
+    signal: args.signal,
   });
 }
 

@@ -20,6 +20,7 @@ export default function Page() {
   const [prompt, setPrompt] = useState("");
   const [priority, setPriority] = useState<Priority>("quality");
   const [transparentBg, setTransparentBg] = useState(true);
+  const [multiView, setMultiView] = useState(false);
 
   const [instruction, setInstruction] = useState("");
   const [editPriority, setEditPriority] = useState<Priority>("quality");
@@ -64,7 +65,12 @@ export default function Page() {
     setError(null);
     setGenerating(true);
     try {
-      const res = await generateImage(submittedPrompt, priority, transparentBg);
+      const res = await generateImage(
+        submittedPrompt,
+        priority,
+        transparentBg,
+        multiView,
+      );
       if (res.error) {
         setError(res.error);
       } else {
@@ -79,7 +85,7 @@ export default function Page() {
     } finally {
       setGenerating(false);
     }
-  }, [prompt, priority, transparentBg, generating, refreshHistory]);
+  }, [prompt, priority, transparentBg, multiView, generating, refreshHistory]);
 
   const onEdit = useCallback(
     async (override?: string) => {
@@ -163,6 +169,8 @@ export default function Page() {
           setPriority={setPriority}
           transparentBg={transparentBg}
           setTransparentBg={setTransparentBg}
+          multiView={multiView}
+          setMultiView={setMultiView}
           onGenerate={onGenerate}
           generating={generating}
           error={error}

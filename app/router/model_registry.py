@@ -3,7 +3,21 @@ Model selection logic based on the research document.
 Maps intent signals → best model for the job.
 """
 
+from app.config import get_settings
 from app.graph.state import OrchestratorState
+
+# Provider → Settings attribute holding its API key
+_PROVIDER_KEY_ATTR = {
+    "fal": "fal_key",
+    "ideogram": "ideogram_api_key",
+    "recraft": "recraft_api_key",
+    "openai": "openai_api_key",
+    "google": "google_cloud_project",
+}
+
+# Preference order when the selected generation model's provider has no key.
+# Order reflects "best default generator" → widest fallback.
+_GENERATION_FALLBACK_ORDER = ("flux-2-pro", "gpt-image-1.5", "imagen-4-fast")
 
 # Model catalog with capabilities and metadata
 MODELS = {
@@ -124,18 +138,26 @@ def select_generation_model(state: OrchestratorState) -> dict:
 
     # Rule 1: Vector/SVG → Recraft V4 (only model that outputs real SVG)
     if needs_vector:
-        return _pick("recraft-v4", "Needs vector/SVG output — only Recraft V4 generates real SVGs")
+        return _apply_generation_key_fallback(
+            _pick("recraft-v4", "Needs vector/SVG output — only Recraft V4 generates real SVGs")
+        )
 
     # Rule 2: Text on product → Ideogram 3.0 (90-95% text accuracy)
     if needs_text:
-        return _pick("ideogram-3", "Text rendering needed — Ideogram 3.0 has 90-95% text accuracy")
+        return _apply_generation_key_fallback(
+            _pick("ideogram-3", "Text rendering needed — Ideogram 3.0 has 90-95% text accuracy")
+        )
 
     # Rule 3: Priority-based selection for photorealistic/product shots
     if priority == "cost":
-        return _pick("imagen-4-fast", "Cost priority — Imagen 4 Fast at $0.02/image is cheapest quality option")
+        return _apply_generation_key_fallback(
+            _pick("imagen-4-fast", "Cost priority — Imagen 4 Fast at $0.02/image is cheapest quality option")
+        )
 
     if priority == "speed":
-        return _pick("imagen-4-fast", "Speed priority — Imagen 4 Fast has ~2.7s latency")
+        return _apply_generation_key_fallback(
+            _pick("imagen-4-fast", "Speed priority — Imagen 4 Fast has ~2.7s latency")
+        )
 
     # Default: quality priority
     base = _pick("flux-2-pro", "Quality priority — FLUX.2 Pro has top Elo rating (1,265)")
@@ -148,7 +170,7 @@ def select_generation_model(state: OrchestratorState) -> dict:
         base["selection_reasoning"] = (
             base["selection_reasoning"] + " + rembg post-processing for transparent background"
         )
-    return base
+    return _apply_generation_key_fallback(base)
 
 
 def select_editing_model(state: OrchestratorState) -> dict:
@@ -193,3 +215,44 @@ def _pick(model_id: str, reasoning: str) -> dict:
         "selection_reasoning": reasoning,
         "cost": model["cost_per_image"],
     }
+
+
+def _provider_has_key(provider: str) -> bool:
+    attr = _PROVIDER_KEY_ATTR.get(provider)
+    if not attr:
+        return True
+    value = getattr(get_settings(), attr, "") or ""
+    return bool(value.strip())
+
+
+def _apply_generation_key_fallback(pick: dict) -> dict:
+    """If the selected provider has no API key, swap to the first available
+    generation model in _GENERATION_FALLBACK_ORDER and explain why in reasoning."""
+    if _provider_has_key(pick["selected_provider"]):
+        return pick
+
+    original_model = pick["selected_model"]
+    original_provider = pick["selected_provider"]
+    original_reason = pick["selection_reasoning"]
+
+    for candidate in _GENERATION_FALLBACK_ORDER:
+        if candidate == original_model:
+            continue
+        candidate_provider = MODELS[candidate]["provider"]
+        if _provider_has_key(candidate_provider):
+            fb = _pick(
+                candidate,
+                (
+                    f"Originally selected {original_model} ({original_reason}), "
+                    f"but {original_provider.upper()} API key is not configured — "
+                    f"falling back to {candidate}."
+                ),
+            )
+            fb["fallback_from"] = original_model
+            return fb
+
+    pick["selection_reasoning"] = (
+        f"{original_reason} — WARNING: {original_provider.upper()} API key is not "
+        f"configured and no fallback provider has a key set."
+    )
+    return pick

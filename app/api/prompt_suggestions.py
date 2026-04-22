@@ -33,6 +33,28 @@ class PromptSuggestionsResponse(BaseModel):
     error: Optional[str] = None
 
 
+class EditProbesRequest(BaseModel):
+    prompt: str = Field(
+        ...,
+        min_length=3,
+        description="Original generation prompt / description of the product in the image",
+    )
+    count: int = Field(
+        default=4,
+        ge=3,
+        le=6,
+        description="Number of probes to return (3–6)",
+    )
+
+
+class EditProbesResponse(BaseModel):
+    success: bool
+    base_prompt: str
+    probes: list[str]
+    reasoning: Optional[str] = None
+    error: Optional[str] = None
+
+
 def _sanitize_suggestions(items: list[str], max_items: int) -> list[str]:
     """Deduplicate/clean suggestions and cap length."""
     cleaned: list[str] = []
@@ -235,6 +257,184 @@ async def _llm_generate_suggestions(
                 typed.append(s)
 
     return typed[:count], (reasoning or "Generated from submitted prompt context.")
+
+
+_GENERIC_EDIT_PROBES = [
+    "shift the background to dusk",
+    "remove the watermark",
+    "make the material darker",
+    "swap metal accents for matte black",
+]
+
+
+def _fallback_edit_probes(prompt: str, count: int) -> list[str]:
+    """Heuristic probes if the LLM is unavailable — still lightly product-aware."""
+    lower = prompt.lower()
+    probes: list[str] = []
+
+    # Very lightweight noun heuristics — find one or two product-like tokens to
+    # reference so the chips still feel specific.
+    noun_hints = [
+        ("wheel", "change the wheel color"),
+        ("tyre", "swap the tyre tread"),
+        ("tire", "swap the tire tread"),
+        ("handle", "change the handle finish"),
+        ("strap", "swap the strap color"),
+        ("chain", "change the chain finish"),
+        ("zip", "swap the zip for matte brass"),
+        ("buckle", "change the buckle to brushed steel"),
+        ("leather", "darken the leather tone"),
+        ("fabric", "darken the fabric weave"),
+        ("denim", "fade the denim wash"),
+        ("wood", "refinish the wood grain"),
+        ("metal", "swap metal for matte black"),
+        ("glass", "reduce glass reflections"),
+        ("logo", "remove the visible logo"),
+        ("label", "remove the product label"),
+        ("button", "change the button color"),
+        ("sole", "swap the sole color"),
+        ("lens", "tint the lens darker"),
+        ("frame", "change the frame finish"),
+        ("lid", "change the lid color"),
+        ("cap", "change the cap color"),
+    ]
+
+    for token, probe in noun_hints:
+        if token in lower:
+            probes.append(probe)
+        if len(probes) >= count:
+            break
+
+    for generic in _GENERIC_EDIT_PROBES:
+        if len(probes) >= count:
+            break
+        if generic.lower() not in {p.lower() for p in probes}:
+            probes.append(generic)
+
+    return probes[:count]
+
+
+async def _llm_generate_edit_probes(
+    prompt: str,
+    count: int,
+) -> tuple[list[str], str]:
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    system_prompt = (
+        "You generate short edit-probe chips for an image-editing UI. "
+        "Given a description of the product in the image, return STRICT JSON "
+        "with keys: probes, reasoning. "
+        "Rules for probes: "
+        "1) Return exactly the requested number of probes. "
+        "2) Each probe is a short imperative phrase, 3–6 words, starts with a verb "
+        "   (e.g. 'change wheel color', 'darken the leather', 'swap brass for matte'). "
+        "3) Each probe must name a specific part, material, or attribute that the "
+        "   product plausibly has — infer parts from the product type. For a suitcase: "
+        "   wheels, handle, zip, shell color. For shoes: laces, sole, upper. For "
+        "   sunglasses: lens tint, frame, temples. "
+        "4) No duplicates, no generic 'improve the image' phrasing. "
+        "5) Lowercase, no trailing punctuation."
+    )
+
+    user_text = (
+        f"Product prompt: {prompt}\n"
+        f"Requested probes: {count}\n"
+        "Return JSON only."
+    )
+
+    body = {
+        "model": "gpt-5.4-mini",
+        "temperature": 0.4,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+
+        if resp.status_code in (401, 403):
+            raise PermissionError(
+                f"OpenAI access denied ({resp.status_code}). "
+                "Check API key validity, project permissions, and model access."
+            )
+
+        resp.raise_for_status()
+        data = resp.json()
+
+    raw = data["choices"][0]["message"]["content"]
+
+    import json
+
+    parsed = json.loads(raw)
+    probes = parsed.get("probes", [])
+    reasoning = str(parsed.get("reasoning", "")).strip()
+
+    if not isinstance(probes, list):
+        probes = []
+
+    typed = [str(x).strip().rstrip(".") for x in probes]
+    typed = _sanitize_suggestions(typed, count)
+
+    if len(typed) < count:
+        for s in _fallback_edit_probes(prompt, count):
+            if len(typed) >= count:
+                break
+            if s.lower() not in {x.lower() for x in typed}:
+                typed.append(s)
+
+    return typed[:count], (
+        reasoning or "Probes derived from product parts inferred from the prompt."
+    )
+
+
+@router.post("/edit-probes", response_model=EditProbesResponse)
+async def edit_probes(req: EditProbesRequest):
+    """Generate 3–6 short imperative edit chips specific to the product in the prompt."""
+    base_prompt = req.prompt.strip()
+    if not base_prompt:
+        return EditProbesResponse(
+            success=False,
+            base_prompt="",
+            probes=[],
+            error="Prompt cannot be empty",
+        )
+
+    try:
+        probes, reasoning = await _llm_generate_edit_probes(base_prompt, req.count)
+        return EditProbesResponse(
+            success=True,
+            base_prompt=base_prompt,
+            probes=probes,
+            reasoning=reasoning,
+        )
+    except PermissionError as e:
+        return EditProbesResponse(
+            success=True,
+            base_prompt=base_prompt,
+            probes=_fallback_edit_probes(base_prompt, req.count),
+            reasoning="Returned local probes because upstream model access is restricted.",
+            error=str(e),
+        )
+    except Exception as e:
+        return EditProbesResponse(
+            success=True,
+            base_prompt=base_prompt,
+            probes=_fallback_edit_probes(base_prompt, req.count),
+            reasoning="Returned local probes due to upstream failure.",
+            error=f"Probe generation failed: {e}",
+        )
 
 
 @router.post("/prompt-suggestions", response_model=PromptSuggestionsResponse)

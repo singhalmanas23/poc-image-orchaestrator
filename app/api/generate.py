@@ -1,7 +1,7 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.graph.workflow import orchestrator
 from app.storage.store import save_result
@@ -13,6 +13,17 @@ class GenerateRequest(BaseModel):
     prompt: str
     priority: Literal["quality", "speed", "cost"] = "quality"
     transparent_background: bool = True
+    multi_view: bool = False
+    num_views: int = Field(default=8, ge=1, le=8)
+
+
+class ViewFrameOut(BaseModel):
+    angle: Optional[str] = None
+    degrees: Optional[int] = None
+    image_url: Optional[str] = None
+    cost: Optional[float] = None
+    latency_ms: Optional[int] = None
+    error: Optional[str] = None
 
 
 class OrchestratorResponse(BaseModel):
@@ -26,18 +37,25 @@ class OrchestratorResponse(BaseModel):
     cost: Optional[float] = None
     latency_ms: Optional[int] = None
     transparent_background: Optional[bool] = None
+    views: Optional[list[ViewFrameOut]] = None
     error: Optional[str] = None
 
 
 @router.post("/generate", response_model=OrchestratorResponse)
 async def generate_image(req: GenerateRequest):
-    """Generate an image. The orchestrator analyzes your prompt and picks the best model."""
+    """Generate an image. The orchestrator analyzes your prompt and picks the best model.
 
-    initial_state = {
+    When `multi_view` is true, returns `views`: a parallel set of camera-angle
+    renderings of the same subject for a 360° turntable viewer.
+    """
+
+    initial_state: dict[str, Any] = {
         "user_prompt": req.prompt,
         "input_image_url": None,
         "priority": req.priority,
         "transparent_background": req.transparent_background,
+        "multi_view": req.multi_view,
+        "num_views": req.num_views,
     }
 
     result = await orchestrator.ainvoke(initial_state)
@@ -60,4 +78,5 @@ async def generate_image(req: GenerateRequest):
         cost=result.get("cost"),
         latency_ms=result.get("latency_ms"),
         transparent_background=result.get("transparent_background"),
+        views=result.get("views"),
     )

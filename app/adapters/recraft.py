@@ -17,8 +17,13 @@ class RecraftAdapter(BaseAdapter):
 
     def _get_headers(self) -> dict:
         settings = get_settings()
+        key = (settings.recraft_api_key or "").strip()
+        if not key:
+            raise RuntimeError(
+                "RECRAFT_API_KEY is not set — add it to .env to use Recraft V4."
+            )
         return {
-            "Authorization": f"Bearer {settings.recraft_api_key}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
 

@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 
-import { imageUrlOf, modelOf, providerOf, reasoningOf } from "@/lib/api";
+import {
+  fetchEditProbes,
+  imageUrlOf,
+  modelOf,
+  providerOf,
+  reasoningOf,
+} from "@/lib/api";
 import type { OrchestratorImage, Priority } from "@/lib/types";
 import { ChannelHeader } from "./channel-header";
 import { PrioritySwitch } from "./priority-switch";
@@ -18,7 +24,7 @@ interface Props {
   editing: boolean;
 }
 
-const PROBE_HINTS = [
+const PROBE_HINTS_FALLBACK = [
   "shift the background to dusk",
   "remove the watermark",
   "make the linen fabric darker",
@@ -47,6 +53,10 @@ function recolorInstruction(name: string) {
   return `recolor the subject in ${name} tones, keeping the existing shape, material, lighting and composition consistent`;
 }
 
+// Module-scoped cache so cached probes survive unmount/remount of this panel
+// (e.g. when the user flips between images). Keyed by image_id.
+const probesCache = new Map<string, string[]>();
+
 export function RefinePanel({
   selected,
   instruction,
@@ -57,6 +67,57 @@ export function RefinePanel({
   editing,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const [probes, setProbes] = useState<string[]>(PROBE_HINTS_FALLBACK);
+  const [probesLoading, setProbesLoading] = useState(false);
+  const probesAbortRef = useRef<AbortController | null>(null);
+
+  const loadProbes = useCallback(
+    (image: OrchestratorImage | null, bustCache: boolean) => {
+      const sourcePrompt = image?.user_prompt ?? image?.optimized_prompt ?? "";
+      if (!image || !sourcePrompt || sourcePrompt.trim().length < 3) {
+        setProbes(PROBE_HINTS_FALLBACK);
+        return;
+      }
+      const id = image.image_id ?? null;
+      if (!bustCache && id && probesCache.has(id)) {
+        setProbes(probesCache.get(id)!);
+        setProbesLoading(false);
+        return;
+      }
+      probesAbortRef.current?.abort();
+      const controller = new AbortController();
+      probesAbortRef.current = controller;
+      setProbesLoading(true);
+      fetchEditProbes({
+        prompt: sourcePrompt,
+        count: 4,
+        signal: controller.signal,
+      })
+        .then((res) => {
+          if (controller.signal.aborted) return;
+          const next =
+            res.probes && res.probes.length > 0 ? res.probes : PROBE_HINTS_FALLBACK;
+          if (id) probesCache.set(id, next);
+          setProbes(next);
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          if (err?.name !== "AbortError") {
+            setProbes(PROBE_HINTS_FALLBACK);
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setProbesLoading(false);
+        });
+    },
+    [],
+  );
+
+  // Auto-load when the selected target changes (uses cache when available).
+  useEffect(() => {
+    loadProbes(selected, false);
+    return () => probesAbortRef.current?.abort();
+  }, [loadProbes, selected?.image_id, selected?.user_prompt, selected?.optimized_prompt]);
 
   // ⌘↵ (or ctrl↵) to apply edit — only when the refine textarea is focused
   useEffect(() => {
@@ -212,18 +273,73 @@ export function RefinePanel({
         {/* probes */}
         {selected && (
           <div className="mb-4">
-            <div className="label mb-2">probes · 03.d</div>
-            <div className="flex flex-wrap gap-1.5">
-              {PROBE_HINTS.map((p) => (
+            <div className="mb-2 flex items-center justify-between">
+              <span className="label">probes · 03.d</span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[9px] uppercase tracking-widest text-bone-mute">
+                  {probesLoading
+                    ? "probing…"
+                    : probes.length === 0
+                      ? "no probes"
+                      : `${probes.length} options`}
+                </span>
                 <button
-                  key={p}
-                  onClick={() => setInstruction(p)}
-                  className="focus-ring border border-line/70 bg-ink-700/40 px-2 py-1 font-mono text-[10px] text-bone-dim transition hover:border-saffron hover:text-saffron"
+                  type="button"
+                  onClick={() => {
+                    if (selected?.image_id) {
+                      probesCache.delete(selected.image_id);
+                    }
+                    loadProbes(selected, true);
+                  }}
+                  disabled={probesLoading || !selected}
+                  title="re-roll probes"
+                  aria-label="re-roll probes"
+                  className="focus-ring flex h-5 w-5 items-center justify-center border border-line/70 font-display text-[12px] leading-none text-bone-dim transition hover:border-saffron hover:text-saffron disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {p}
+                  <motion.span
+                    animate={probesLoading ? { rotate: 360 } : { rotate: 0 }}
+                    transition={
+                      probesLoading
+                        ? { duration: 1, ease: "linear", repeat: Infinity }
+                        : { duration: 0 }
+                    }
+                    className="inline-block"
+                  >
+                    ↻
+                  </motion.span>
                 </button>
-              ))}
+              </div>
             </div>
+            <select
+              value=""
+              onChange={(e) => {
+                const value = e.target.value;
+                if (!value) return;
+                setInstruction(value);
+                taRef.current?.focus();
+                // reset native select so the same probe can be re-picked
+                e.currentTarget.selectedIndex = 0;
+              }}
+              disabled={probesLoading || probes.length === 0}
+              aria-label="pick a suggested edit"
+              className="focus-ring w-full border border-line/80 bg-ink-700/60 px-3 py-2 font-mono text-[11px] text-bone outline-none transition hover:border-saffron disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="">
+                {probesLoading
+                  ? "probing for product-specific edits…"
+                  : probes.length === 0
+                    ? "no probes available — re-roll or write an edit below"
+                    : "pick a suggested edit → fills the instruction"}
+              </option>
+              {probes.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 font-mono text-[9px] uppercase tracking-widest text-bone-mute">
+              selecting a probe fills the instruction — edit before applying
+            </p>
           </div>
         )}
 

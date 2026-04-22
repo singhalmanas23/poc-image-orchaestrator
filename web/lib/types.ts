@@ -14,6 +14,28 @@ export interface PromptSuggestionsResponse {
   error?: string | null;
 }
 
+export interface EditProbesRequest {
+  prompt: string;
+  count?: number;
+}
+
+export interface EditProbesResponse {
+  success: boolean;
+  base_prompt: string;
+  probes: string[];
+  reasoning?: string | null;
+  error?: string | null;
+}
+
+export interface ViewFrame {
+  angle?: string | null;
+  degrees?: number | null;
+  image_url?: string | null;
+  cost?: number | null;
+  latency_ms?: number | null;
+  error?: string | null;
+}
+
 export interface OrchestratorImage {
   success?: boolean;
   image_url?: string | null;
@@ -31,6 +53,7 @@ export interface OrchestratorImage {
   latency_ms?: number | null;
   created_at?: string | null;
   transparent_background?: boolean | null;
+  views?: ViewFrame[] | null;
   error?: string | null;
 }
 
