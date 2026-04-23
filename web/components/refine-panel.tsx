@@ -10,7 +10,7 @@ import {
   providerOf,
   reasoningOf,
 } from "@/lib/api";
-import type { OrchestratorImage, Priority } from "@/lib/types";
+import type { OrchestratorImage, Priority, ProbeCategory } from "@/lib/types";
 import { ChannelHeader } from "./channel-header";
 import { PrioritySwitch } from "./priority-switch";
 
@@ -24,16 +24,42 @@ interface Props {
   editing: boolean;
 }
 
-const PROBE_HINTS_FALLBACK = [
-  "shift the background to dusk",
-  "remove the watermark",
-  "make the linen fabric darker",
-  "swap brass for matte black",
+const PROBE_CATEGORIES_FALLBACK: ProbeCategory[] = [
+  {
+    title: "shift background",
+    options: [
+      { label: "dusk gradient", instruction: "shift the background to a warm dusk gradient" },
+      { label: "clean white", instruction: "replace the background with a clean white studio backdrop" },
+      { label: "dark studio", instruction: "change the background to a dark moody studio setting" },
+    ],
+  },
+  {
+    title: "adjust material finish",
+    options: [
+      { label: "matte", instruction: "apply a matte finish to the main material" },
+      { label: "glossy", instruction: "apply a glossy finish to the main material" },
+      { label: "brushed texture", instruction: "add a brushed texture to the surface" },
+    ],
+  },
+  {
+    title: "change accent tone",
+    options: [
+      { label: "brass accents", instruction: "swap hardware and accent details to a warm brass tone" },
+      { label: "matte black", instruction: "change metal and accent details to matte black" },
+      { label: "chrome", instruction: "swap accents to a polished chrome finish" },
+    ],
+  },
+  {
+    title: "remove distractions",
+    options: [
+      { label: "remove logo", instruction: "remove any visible logo or branding from the product" },
+      { label: "remove watermark", instruction: "remove any watermark or overlay text from the image" },
+      { label: "clean shadows", instruction: "clean up stray shadows and reflections for a neater look" },
+    ],
+  },
 ];
 
-// Curated 12-color recolor palette — distinctive named colors that map cleanly to a
-// natural-language edit instruction. Hex values are shown as the swatch fill; the
-// brain prompt uses the human name only.
+// Curated 12-color recolor palette
 const PALETTE: { name: string; hex: string }[] = [
   { name: "saffron", hex: "#F4A340" },
   { name: "oxblood", hex: "#6E1A1F" },
@@ -53,9 +79,8 @@ function recolorInstruction(name: string) {
   return `recolor the subject in ${name} tones, keeping the existing shape, material, lighting and composition consistent`;
 }
 
-// Module-scoped cache so cached probes survive unmount/remount of this panel
-// (e.g. when the user flips between images). Keyed by image_id.
-const probesCache = new Map<string, string[]>();
+// Module-scoped cache keyed by image_id
+const probesCache = new Map<string, ProbeCategory[]>();
 
 export function RefinePanel({
   selected,
@@ -67,20 +92,25 @@ export function RefinePanel({
   editing,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const [probes, setProbes] = useState<string[]>(PROBE_HINTS_FALLBACK);
+  const [probeCategories, setProbeCategories] = useState<ProbeCategory[]>(PROBE_CATEGORIES_FALLBACK);
   const [probesLoading, setProbesLoading] = useState(false);
   const probesAbortRef = useRef<AbortController | null>(null);
+
+  // Track selected option per category: { categoryTitle: optionInstruction }
+  const [probeSelections, setProbeSelections] = useState<Record<string, string>>({});
 
   const loadProbes = useCallback(
     (image: OrchestratorImage | null, bustCache: boolean) => {
       const sourcePrompt = image?.user_prompt ?? image?.optimized_prompt ?? "";
       if (!image || !sourcePrompt || sourcePrompt.trim().length < 3) {
-        setProbes(PROBE_HINTS_FALLBACK);
+        setProbeCategories(PROBE_CATEGORIES_FALLBACK);
+        setProbeSelections({});
         return;
       }
       const id = image.image_id ?? null;
       if (!bustCache && id && probesCache.has(id)) {
-        setProbes(probesCache.get(id)!);
+        setProbeCategories(probesCache.get(id)!);
+        setProbeSelections({});
         setProbesLoading(false);
         return;
       }
@@ -88,6 +118,7 @@ export function RefinePanel({
       const controller = new AbortController();
       probesAbortRef.current = controller;
       setProbesLoading(true);
+      setProbeSelections({});
       fetchEditProbes({
         prompt: sourcePrompt,
         count: 4,
@@ -95,15 +126,21 @@ export function RefinePanel({
       })
         .then((res) => {
           if (controller.signal.aborted) return;
-          const next =
-            res.probes && res.probes.length > 0 ? res.probes : PROBE_HINTS_FALLBACK;
+          const raw = res.probes && res.probes.length > 0 ? res.probes : PROBE_CATEGORIES_FALLBACK;
+          const next: ProbeCategory[] = raw.map((p) => {
+            if (typeof p === "string") {
+              return { title: p, options: [{ label: "apply", instruction: p }] };
+            }
+            return p as ProbeCategory;
+          });
           if (id) probesCache.set(id, next);
-          setProbes(next);
+          setProbeCategories(next);
         })
         .catch((err) => {
           if (controller.signal.aborted) return;
           if (err?.name !== "AbortError") {
-            setProbes(PROBE_HINTS_FALLBACK);
+            setProbeCategories(PROBE_CATEGORIES_FALLBACK);
+            setProbeSelections({});
           }
         })
         .finally(() => {
@@ -113,7 +150,6 @@ export function RefinePanel({
     [],
   );
 
-  // Auto-load when the selected target changes (uses cache when available).
   useEffect(() => {
     loadProbes(selected, false);
     return () => probesAbortRef.current?.abort();
@@ -140,6 +176,36 @@ export function RefinePanel({
   const provider = providerOf(selected);
   const reasoning = reasoningOf(selected);
 
+  const handleProbeApply = (category: ProbeCategory) => {
+    const selectedInstruction = probeSelections[category.title];
+    if (!selectedInstruction || !selected) return;
+
+    const option = category.options.find((o) => o.instruction === selectedInstruction);
+    const editInstruction = option
+      ? `${category.title}: ${option.instruction}`
+      : selectedInstruction;
+
+    setInstruction(editInstruction);
+    onEdit(editInstruction);
+  };
+
+  const handleApplyAll = () => {
+    if (!selected) return;
+    const parts: string[] = [];
+    for (const cat of probeCategories) {
+      const sel = probeSelections[cat.title];
+      if (!sel) continue;
+      const option = cat.options.find((o) => o.instruction === sel);
+      parts.push(option ? `${cat.title}: ${option.instruction}` : sel);
+    }
+    if (parts.length === 0) return;
+    const combined = parts.join("; ");
+    setInstruction(combined);
+    onEdit(combined);
+  };
+
+  const hasAnySelection = Object.values(probeSelections).some((v) => v !== "");
+
   return (
     <section className="flex min-h-0 flex-col bg-ink-800/40">
       <ChannelHeader index="03" title="refine" badge="instruction">
@@ -148,10 +214,10 @@ export function RefinePanel({
         </span>
       </ChannelHeader>
 
-      <div className="scroll min-h-0 flex-1 overflow-y-auto px-5 py-5">
+      <div className="scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {/* selected target preview */}
-        <div className="mb-4">
-          <div className="mb-2 flex items-center justify-between">
+        <div className="mb-3">
+          <div className="mb-1.5 flex items-center justify-between">
             <span className="label">target · 03.a</span>
             {selected?.image_id && (
               <span className="font-mono text-[9px] uppercase tracking-widest text-bone-mute">
@@ -188,7 +254,7 @@ export function RefinePanel({
           </div>
 
           {selected && (
-            <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-widest text-bone-mute">
+            <div className="mt-1.5 grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-widest text-bone-mute">
               <span className="truncate">model · {model ?? "—"}</span>
               <span className="truncate text-right">
                 {provider ?? "—"}
@@ -197,10 +263,38 @@ export function RefinePanel({
           )}
         </div>
 
-        {/* palette · 03.b — click to recolor */}
-        <div className="mb-4">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="label">palette · 03.b</span>
+        {/* instruction — right below image */}
+        <div className="mb-3">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="label">instruction · 03.b</span>
+            <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
+              ⌘↵ to apply
+            </span>
+          </div>
+
+          <div className="crosshair relative border border-line/80 bg-ink-700/60 p-3">
+            <span className="ch-bl" />
+            <span className="ch-br" />
+            <textarea
+              ref={taRef}
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              rows={3}
+              disabled={!selected}
+              placeholder={
+                selected
+                  ? "describe the edit…"
+                  : "no target loaded — pick a latent from explore"
+              }
+              className="focus-ring w-full resize-none bg-transparent font-mono text-[12px] leading-relaxed text-bone placeholder:text-bone-mute focus:outline-none disabled:opacity-50"
+            />
+          </div>
+        </div>
+
+        {/* palette · 03.c — click to recolor */}
+        <div className="mb-3">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="label">palette · 03.c</span>
             <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
               click to recolor
             </span>
@@ -221,137 +315,75 @@ export function RefinePanel({
                     onEdit(text);
                   }}
                   title={`${c.name} · ${c.hex}`}
-                  className="focus-ring group relative flex items-center gap-2 bg-ink-800 px-2 py-2 transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="focus-ring group relative flex items-center gap-2 bg-ink-800 px-2 py-1.5 transition hover:bg-ink-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <span
                     aria-hidden
-                    className="block h-5 w-5 shrink-0 border border-bone/10 transition group-hover:scale-110 group-hover:border-bone/30"
+                    className="block h-4 w-4 shrink-0 border border-bone/10 transition group-hover:scale-110 group-hover:border-bone/30"
                     style={{ backgroundColor: c.hex }}
                   />
-                  <span className="truncate font-mono text-[10px] uppercase tracking-widest text-bone-dim group-hover:text-bone">
+                  <span className="truncate font-mono text-[9px] uppercase tracking-widest text-bone-dim group-hover:text-bone">
                     {c.name}
                   </span>
                 </button>
               );
             })}
           </div>
-          {selected && (
-            <p className="mt-1.5 font-mono text-[9px] uppercase tracking-widest text-bone-mute">
-              one click → templated recolor edit
-            </p>
-          )}
         </div>
 
-        {/* instruction */}
-        <div className="mb-3">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="label">instruction · 03.c</span>
-            <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
-              ⌘↵ to apply
-            </span>
-          </div>
-
-          <div className="crosshair relative border border-line/80 bg-ink-700/60 p-3">
-            <span className="ch-bl" />
-            <span className="ch-br" />
-            <textarea
-              ref={taRef}
-              value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
-              rows={4}
-              disabled={!selected}
-              placeholder={
-                selected
-                  ? "describe the edit…"
-                  : "no target loaded — pick a latent from explore"
-              }
-              className="focus-ring w-full resize-none bg-transparent font-mono text-[12px] leading-relaxed text-bone placeholder:text-bone-mute focus:outline-none disabled:opacity-50"
-            />
-          </div>
-        </div>
-
-        {/* probes */}
+        {/* probe categories · 03.d */}
         {selected && (
-          <div className="mb-4">
-            <div className="mb-2 flex items-center justify-between">
+          <div className="mb-3">
+            <div className="mb-1.5 flex items-center justify-between">
               <span className="label">probes · 03.d</span>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[9px] uppercase tracking-widest text-bone-mute">
-                  {probesLoading
-                    ? "probing…"
-                    : probes.length === 0
-                      ? "no probes"
-                      : `${probes.length} options`}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (selected?.image_id) {
-                      probesCache.delete(selected.image_id);
-                    }
-                    loadProbes(selected, true);
-                  }}
-                  disabled={probesLoading || !selected}
-                  title="re-roll probes"
-                  aria-label="re-roll probes"
-                  className="focus-ring flex h-5 w-5 items-center justify-center border border-line/70 font-display text-[12px] leading-none text-bone-dim transition hover:border-saffron hover:text-saffron disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <motion.span
-                    animate={probesLoading ? { rotate: 360 } : { rotate: 0 }}
-                    transition={
-                      probesLoading
-                        ? { duration: 1, ease: "linear", repeat: Infinity }
-                        : { duration: 0 }
-                    }
-                    className="inline-block"
-                  >
-                    ↻
-                  </motion.span>
-                </button>
-              </div>
-            </div>
-            <select
-              value=""
-              onChange={(e) => {
-                const value = e.target.value;
-                if (!value) return;
-                setInstruction(value);
-                taRef.current?.focus();
-                // reset native select so the same probe can be re-picked
-                e.currentTarget.selectedIndex = 0;
-              }}
-              disabled={probesLoading || probes.length === 0}
-              aria-label="pick a suggested edit"
-              className="focus-ring w-full border border-line/80 bg-ink-700/60 px-3 py-2 font-mono text-[11px] text-bone outline-none transition hover:border-saffron disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="">
+              <span className="font-mono text-[9px] uppercase tracking-widest text-bone-mute">
                 {probesLoading
-                  ? "probing for product-specific edits…"
-                  : probes.length === 0
-                    ? "no probes available — re-roll or write an edit below"
-                    : "pick a suggested edit → fills the instruction"}
-              </option>
-              {probes.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
+                  ? "probing…"
+                  : probeCategories.length === 0
+                    ? "no probes"
+                    : `${probeCategories.length} categories`}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {probeCategories.map((cat) => (
+                <ProbeCategoryRow
+                  key={cat.title}
+                  category={cat}
+                  selectedOption={probeSelections[cat.title] ?? ""}
+                  onOptionChange={(instruction) =>
+                    setProbeSelections((prev) => ({
+                      ...prev,
+                      [cat.title]: instruction,
+                    }))
+                  }
+                  disabled={!selected || editing || probesLoading}
+                />
               ))}
-            </select>
-            <p className="mt-1.5 font-mono text-[9px] uppercase tracking-widest text-bone-mute">
-              selecting a probe fills the instruction — edit before applying
-            </p>
+            </div>
+
+            {hasAnySelection && (
+              <button
+                type="button"
+                disabled={!selected || editing}
+                onClick={handleApplyAll}
+                className="focus-ring mt-2 w-full border border-saffron bg-saffron/10 px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-saffron transition hover:bg-saffron/20 disabled:cursor-not-allowed disabled:border-line/60 disabled:text-bone-mute/50 disabled:hover:bg-transparent"
+              >
+                Apply!
+              </button>
+            )}
           </div>
         )}
 
         {/* priority + apply */}
-        <div className="mb-5 flex items-center justify-between gap-2">
+        <div className="mb-4 flex items-center justify-between gap-2">
           <PrioritySwitch value={priority} onChange={setPriority} />
         </div>
 
         <button
           disabled={!selected || !instruction.trim() || editing}
           onClick={() => onEdit()}
-          className="focus-ring crosshair group relative flex w-full items-center justify-center gap-3 border border-saffron bg-transparent px-5 py-3 font-mono text-[11px] uppercase tracking-widest text-saffron transition hover:bg-saffron/10 disabled:cursor-not-allowed disabled:border-line disabled:text-bone-mute disabled:hover:bg-transparent"
+          className="focus-ring crosshair group relative flex w-full items-center justify-center gap-3 border border-saffron bg-transparent px-5 py-2.5 font-mono text-[11px] uppercase tracking-widest text-saffron transition hover:bg-saffron/10 disabled:cursor-not-allowed disabled:border-line disabled:text-bone-mute disabled:hover:bg-transparent"
         >
           <span className="ch-bl" />
           <span className="ch-br" />
@@ -369,8 +401,8 @@ export function RefinePanel({
 
         {/* reasoning */}
         {reasoning && (
-          <div className="mt-5 border-t border-line/60 pt-4">
-            <div className="label mb-2">routing · why</div>
+          <div className="mt-4 border-t border-line/60 pt-3">
+            <div className="label mb-1.5">routing · why</div>
             <p className="font-mono text-[11px] leading-relaxed text-bone-dim">
               {reasoning}
             </p>
@@ -378,12 +410,50 @@ export function RefinePanel({
         )}
 
         {/* footnote */}
-        <div className="mt-6 border-t border-line/60 pt-3 font-mono text-[9px] uppercase leading-relaxed tracking-widest text-bone-mute">
+        <div className="mt-4 border-t border-line/60 pt-2 font-mono text-[9px] uppercase leading-relaxed tracking-widest text-bone-mute">
           edits route through specialised models · text → ideogram · mask → flux
           fill · style → flux kontext
         </div>
       </div>
     </section>
+  );
+}
+
+function ProbeCategoryRow({
+  category,
+  selectedOption,
+  onOptionChange,
+  disabled,
+}: {
+  category: ProbeCategory;
+  selectedOption: string;
+  onOptionChange: (instruction: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="border border-line/80 bg-ink-700/40 px-3 py-2">
+      <span className="mb-1 block font-mono text-[10px] uppercase tracking-widest text-bone-dim">
+        {category.title}
+      </span>
+      <select
+        value={selectedOption}
+        onChange={(e) => {
+          onOptionChange(e.target.value);
+        }}
+        disabled={disabled || category.options.length === 0}
+        aria-label={`pick an option for ${category.title}`}
+        className="focus-ring w-full border border-line/80 bg-ink-700/60 px-2 py-1.5 font-mono text-[11px] text-bone outline-none transition hover:border-saffron disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <option value="">
+          {category.options.length === 0 ? "no options" : "select"}
+        </option>
+        {category.options.map((opt) => (
+          <option key={opt.label} value={opt.instruction}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 

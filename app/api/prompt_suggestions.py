@@ -33,6 +33,18 @@ class PromptSuggestionsResponse(BaseModel):
     error: Optional[str] = None
 
 
+class ProbeOption(BaseModel):
+    label: str = Field(description="Short display label shown in the dropdown")
+    instruction: str = Field(description="Full edit instruction sent to the API when selected")
+
+
+class ProbeCategory(BaseModel):
+    title: str = Field(description="Category title, e.g. 'adjust wallet shape'")
+    options: list[ProbeOption] = Field(
+        description="3–4 specific options for this category"
+    )
+
+
 class EditProbesRequest(BaseModel):
     prompt: str = Field(
         ...,
@@ -43,14 +55,14 @@ class EditProbesRequest(BaseModel):
         default=4,
         ge=3,
         le=6,
-        description="Number of probes to return (3–6)",
+        description="Number of probe categories to return (3–6)",
     )
 
 
 class EditProbesResponse(BaseModel):
     success: bool
     base_prompt: str
-    probes: list[str]
+    probes: list[ProbeCategory]
     reasoning: Optional[str] = None
     error: Optional[str] = None
 
@@ -83,7 +95,6 @@ def _fallback_suggestions(prompt: str, count: int) -> list[str]:
     p = " ".join(prompt.strip().split())
     lower = p.lower()
 
-    # Heuristic context extraction from user prompt
     lighting_tokens = (
         "studio",
         "softbox",
@@ -117,7 +128,6 @@ def _fallback_suggestions(prompt: str, count: int) -> list[str]:
 
     candidates: list[str] = []
 
-    # Build dynamic variants based on what is missing/present
     if not has_lighting:
         candidates.append(
             f"{p}, with premium soft key light, subtle rim light, and natural shadow falloff"
@@ -161,7 +171,6 @@ def _fallback_suggestions(prompt: str, count: int) -> list[str]:
         f"{p}, with subtle premium detailing and manufacturing-quality finish"
     )
 
-    # De-duplicate and cap
     unique: list[str] = []
     seen: set[str] = set()
     for s in candidates:
@@ -223,7 +232,6 @@ async def _llm_generate_suggestions(
             json=body,
         )
 
-        # Handle permission/plan restrictions explicitly so caller can degrade gracefully
         if resp.status_code in (401, 403):
             raise PermissionError(
                 f"OpenAI access denied ({resp.status_code}). "
@@ -248,7 +256,6 @@ async def _llm_generate_suggestions(
     typed = _sanitize_suggestions(typed, count)
 
     if len(typed) < count:
-        # Backfill if model under-returns
         fallback = _fallback_suggestions(prompt, count)
         for s in fallback:
             if len(typed) >= count:
@@ -259,88 +266,191 @@ async def _llm_generate_suggestions(
     return typed[:count], (reasoning or "Generated from submitted prompt context.")
 
 
-_GENERIC_EDIT_PROBES = [
-    "shift the background to dusk",
-    "remove the watermark",
-    "make the material darker",
-    "swap metal accents for matte black",
+_GENERIC_EDIT_CATEGORIES: list[dict] = [
+    {
+        "title": "shift background",
+        "options": [
+            {"label": "dusk gradient", "instruction": "shift the background to a warm dusk gradient"},
+            {"label": "clean white", "instruction": "replace the background with a clean white studio backdrop"},
+            {"label": "dark studio", "instruction": "change the background to a dark moody studio setting"},
+            {"label": "natural light", "instruction": "set the background to soft natural window light"},
+        ],
+    },
+    {
+        "title": "adjust material finish",
+        "options": [
+            {"label": "matte", "instruction": "apply a matte finish to the main material"},
+            {"label": "glossy", "instruction": "apply a glossy finish to the main material"},
+            {"label": "brushed texture", "instruction": "add a brushed texture to the surface"},
+        ],
+    },
+    {
+        "title": "change accent tone",
+        "options": [
+            {"label": "brass accents", "instruction": "swap hardware and accent details to a warm brass tone"},
+            {"label": "matte black", "instruction": "change metal and accent details to matte black"},
+            {"label": "chrome", "instruction": "swap accents to a polished chrome finish"},
+        ],
+    },
+    {
+        "title": "remove distractions",
+        "options": [
+            {"label": "remove logo", "instruction": "remove any visible logo or branding from the product"},
+            {"label": "remove watermark", "instruction": "remove any watermark or overlay text from the image"},
+            {"label": "clean shadows", "instruction": "clean up stray shadows and reflections for a neater look"},
+        ],
+    },
+]
+
+_NOUN_HINT_CATEGORIES: list[tuple[str, dict]] = [
+    ("wheel", {"title": "change wheel style", "options": [
+        {"label": "matte black", "instruction": "change the wheel finish to matte black"},
+        {"label": "chrome", "instruction": "swap the wheels for a polished chrome finish"},
+        {"label": "brushed alloy", "instruction": "change the wheels to a brushed alloy look"},
+    ]}),
+    ("tyre", {"title": "adjust tyre", "options": [
+        {"label": "all-terrain", "instruction": "swap the tyre tread for an all-terrain pattern"},
+        {"label": "slick", "instruction": "change the tyre to a smooth slick profile"},
+        {"label": "wider stance", "instruction": "widen the tyre for a more aggressive stance"},
+    ]}),
+    ("tire", {"title": "adjust tire", "options": [
+        {"label": "all-terrain", "instruction": "swap the tire tread for an all-terrain pattern"},
+        {"label": "slick", "instruction": "change the tire to a smooth slick profile"},
+        {"label": "wider stance", "instruction": "widen the tire for a more aggressive stance"},
+    ]}),
+    ("handle", {"title": "change handle", "options": [
+        {"label": "leather wrap", "instruction": "add a leather wrap to the handle"},
+        {"label": "matte black", "instruction": "change the handle finish to matte black"},
+        {"label": "brushed steel", "instruction": "swap the handle to brushed steel"},
+    ]}),
+    ("strap", {"title": "adjust strap", "options": [
+        {"label": "leather", "instruction": "change the strap to smooth leather"},
+        {"label": "canvas", "instruction": "swap the strap material to canvas"},
+        {"label": "darker tone", "instruction": "darken the strap color"},
+    ]}),
+    ("leather", {"title": "adjust leather", "options": [
+        {"label": "matte", "instruction": "apply a matte finish to the leather"},
+        {"label": "glossy", "instruction": "give the leather a glossy polished finish"},
+        {"label": "distressed", "instruction": "add a distressed vintage texture to the leather"},
+        {"label": "darker tone", "instruction": "darken the leather to a richer tone"},
+    ]}),
+    ("zip", {"title": "change zip", "options": [
+        {"label": "matte brass", "instruction": "swap the zip hardware for matte brass"},
+        {"label": "black", "instruction": "change the zip to a discreet black finish"},
+        {"label": "chrome", "instruction": "swap the zip for polished chrome"},
+    ]}),
+    ("buckle", {"title": "adjust buckle", "options": [
+        {"label": "brushed steel", "instruction": "change the buckle to brushed steel"},
+        {"label": "matte black", "instruction": "swap the buckle for matte black"},
+        {"label": "brass", "instruction": "change the buckle to warm brass"},
+    ]}),
+    ("fabric", {"title": "adjust fabric", "options": [
+        {"label": "linen texture", "instruction": "add a fine linen texture to the fabric"},
+        {"label": "darker weave", "instruction": "darken the fabric weave"},
+        {"label": "satin finish", "instruction": "give the fabric a smooth satin finish"},
+    ]}),
+    ("wood", {"title": "refinish wood", "options": [
+        {"label": "walnut", "instruction": "change the wood grain to rich walnut"},
+        {"label": "oak", "instruction": "swap the wood finish to light oak"},
+        {"label": "dark stain", "instruction": "apply a dark stain to the wood"},
+    ]}),
+    ("metal", {"title": "change metal finish", "options": [
+        {"label": "matte black", "instruction": "swap metal accents for matte black"},
+        {"label": "brushed", "instruction": "give the metal a brushed finish"},
+        {"label": "polished chrome", "instruction": "change metal details to polished chrome"},
+    ]}),
+    ("glass", {"title": "adjust glass", "options": [
+        {"label": "reduce glare", "instruction": "reduce reflections and glare on the glass"},
+        {"label": "frosted", "instruction": "apply a frosted effect to the glass surface"},
+        {"label": "tinted", "instruction": "add a subtle tint to the glass"},
+    ]}),
+    ("logo", {"title": "adjust logo", "options": [
+        {"label": "remove", "instruction": "remove the visible logo from the product"},
+        {"label": "emboss", "instruction": "change the logo to a subtle embossed style"},
+        {"label": "reposition", "instruction": "move the logo position on the product"},
+    ]}),
+    ("label", {"title": "adjust label", "options": [
+        {"label": "remove", "instruction": "remove the product label"},
+        {"label": "minimalist", "instruction": "simplify the label to a minimalist design"},
+        {"label": "reposition", "instruction": "move the label to a different position"},
+    ]}),
+    ("lens", {"title": "adjust lens", "options": [
+        {"label": "darker tint", "instruction": "tint the lens darker"},
+        {"label": "gradient", "instruction": "add a gradient tint to the lens"},
+        {"label": "clear", "instruction": "make the lens fully clear and transparent"},
+    ]}),
+    ("frame", {"title": "change frame style", "options": [
+        {"label": "matte black", "instruction": "change the frame finish to matte black"},
+        {"label": "gold", "instruction": "swap the frame to a gold tone"},
+        {"label": "tortoiseshell", "instruction": "change the frame to a tortoiseshell pattern"},
+    ]}),
+    ("sole", {"title": "adjust sole", "options": [
+        {"label": "darker", "instruction": "darken the sole color"},
+        {"label": "white", "instruction": "change the sole to clean white"},
+        {"label": "contrast", "instruction": "add a contrast color pop to the sole"},
+    ]}),
 ]
 
 
-def _fallback_edit_probes(prompt: str, count: int) -> list[str]:
-    """Heuristic probes if the LLM is unavailable — still lightly product-aware."""
+def _fallback_edit_probes(prompt: str, count: int) -> list[ProbeCategory]:
+    """Heuristic structured probes if the LLM is unavailable."""
     lower = prompt.lower()
-    probes: list[str] = []
+    categories: list[ProbeCategory] = []
 
-    # Very lightweight noun heuristics — find one or two product-like tokens to
-    # reference so the chips still feel specific.
-    noun_hints = [
-        ("wheel", "change the wheel color"),
-        ("tyre", "swap the tyre tread"),
-        ("tire", "swap the tire tread"),
-        ("handle", "change the handle finish"),
-        ("strap", "swap the strap color"),
-        ("chain", "change the chain finish"),
-        ("zip", "swap the zip for matte brass"),
-        ("buckle", "change the buckle to brushed steel"),
-        ("leather", "darken the leather tone"),
-        ("fabric", "darken the fabric weave"),
-        ("denim", "fade the denim wash"),
-        ("wood", "refinish the wood grain"),
-        ("metal", "swap metal for matte black"),
-        ("glass", "reduce glass reflections"),
-        ("logo", "remove the visible logo"),
-        ("label", "remove the product label"),
-        ("button", "change the button color"),
-        ("sole", "swap the sole color"),
-        ("lens", "tint the lens darker"),
-        ("frame", "change the frame finish"),
-        ("lid", "change the lid color"),
-        ("cap", "change the cap color"),
-    ]
-
-    for token, probe in noun_hints:
+    for token, cat_data in _NOUN_HINT_CATEGORIES:
         if token in lower:
-            probes.append(probe)
-        if len(probes) >= count:
+            categories.append(ProbeCategory(
+                title=cat_data["title"],
+                options=[ProbeOption(**o) for o in cat_data["options"]],
+            ))
+        if len(categories) >= count:
             break
 
-    for generic in _GENERIC_EDIT_PROBES:
-        if len(probes) >= count:
+    for cat_data in _GENERIC_EDIT_CATEGORIES:
+        if len(categories) >= count:
             break
-        if generic.lower() not in {p.lower() for p in probes}:
-            probes.append(generic)
+        if cat_data["title"].lower() not in {c.title.lower() for c in categories}:
+            categories.append(ProbeCategory(
+                title=cat_data["title"],
+                options=[ProbeOption(**o) for o in cat_data["options"]],
+            ))
 
-    return probes[:count]
+    return categories[:count]
 
 
 async def _llm_generate_edit_probes(
     prompt: str,
     count: int,
-) -> tuple[list[str], str]:
+) -> tuple[list[ProbeCategory], str]:
     settings = get_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
     system_prompt = (
-        "You generate short edit-probe chips for an image-editing UI. "
-        "Given a description of the product in the image, return STRICT JSON "
-        "with keys: probes, reasoning. "
+        "You generate structured edit-probe categories for an image-editing UI. "
+        "Given a description of the product in the image, return STRICT JSON with "
+        "keys: probes, reasoning. "
+        "Each probe is an object with 'title' (a short category label, 2–5 words, "
+        "e.g. 'adjust wallet shape') and 'options' — an array of 3–4 objects, each "
+        "with 'label' (a short value shown in a dropdown, 1–3 words, e.g. 'rectangle') "
+        "and 'instruction' (the full edit instruction sent to the model, e.g. "
+        "'change the wallet shape to a sleek rectangle'). "
         "Rules for probes: "
-        "1) Return exactly the requested number of probes. "
-        "2) Each probe is a short imperative phrase, 3–6 words, starts with a verb "
-        "   (e.g. 'change wheel color', 'darken the leather', 'swap brass for matte'). "
-        "3) Each probe must name a specific part, material, or attribute that the "
-        "   product plausibly has — infer parts from the product type. For a suitcase: "
-        "   wheels, handle, zip, shell color. For shoes: laces, sole, upper. For "
-        "   sunglasses: lens tint, frame, temples. "
-        "4) No duplicates, no generic 'improve the image' phrasing. "
-        "5) Lowercase, no trailing punctuation."
+        "1) Return exactly the requested number of probe categories. "
+        "2) Each category title should name a specific part, material, or attribute of "
+        "the product — infer parts from the product type. For a suitcase: wheels, handle, "
+        "zip, shell color. For shoes: laces, sole, upper material. "
+        "3) Each option's 'label' must be short (1–3 words) and the 'instruction' must be "
+        "a complete imperative edit sentence (5–12 words). "
+        "4) No duplicate categories. No generic 'improve the image' phrasing. "
+        "5) Categories should cover different aspects: material, color, shape, background, "
+        "details — not just color changes. "
+        "6) Lowercase titles, no trailing punctuation on labels."
     )
 
     user_text = (
         f"Product prompt: {prompt}\n"
-        f"Requested probes: {count}\n"
+        f"Requested probe categories: {count}\n"
         "Return JSON only."
     )
 
@@ -378,30 +488,53 @@ async def _llm_generate_edit_probes(
     import json
 
     parsed = json.loads(raw)
-    probes = parsed.get("probes", [])
+    probes_raw = parsed.get("probes", [])
     reasoning = str(parsed.get("reasoning", "")).strip()
 
-    if not isinstance(probes, list):
-        probes = []
+    categories: list[ProbeCategory] = []
+    seen_titles: set[str] = set()
 
-    typed = [str(x).strip().rstrip(".") for x in probes]
-    typed = _sanitize_suggestions(typed, count)
+    if isinstance(probes_raw, list):
+        for item in probes_raw:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            if not title or title.lower() in seen_titles:
+                continue
+            seen_titles.add(title.lower())
 
-    if len(typed) < count:
-        for s in _fallback_edit_probes(prompt, count):
-            if len(typed) >= count:
+            options_raw = item.get("options", [])
+            options: list[ProbeOption] = []
+            if isinstance(options_raw, list):
+                for opt in options_raw:
+                    if isinstance(opt, dict):
+                        label = str(opt.get("label", "")).strip()
+                        instruction = str(opt.get("instruction", "")).strip()
+                        if label and instruction:
+                            options.append(ProbeOption(label=label, instruction=instruction))
+
+            if not options:
+                continue
+            categories.append(ProbeCategory(title=title, options=options))
+            if len(categories) >= count:
                 break
-            if s.lower() not in {x.lower() for x in typed}:
-                typed.append(s)
 
-    return typed[:count], (
-        reasoning or "Probes derived from product parts inferred from the prompt."
+    if len(categories) < count:
+        for cat in _fallback_edit_probes(prompt, count):
+            if cat.title.lower() not in seen_titles:
+                seen_titles.add(cat.title.lower())
+                categories.append(cat)
+            if len(categories) >= count:
+                break
+
+    return categories[:count], (
+        reasoning or "Structured probes derived from product parts inferred from the prompt."
     )
 
 
 @router.post("/edit-probes", response_model=EditProbesResponse)
 async def edit_probes(req: EditProbesRequest):
-    """Generate 3–6 short imperative edit chips specific to the product in the prompt."""
+    """Generate 3–6 structured edit-probe categories with dropdown options specific to the product."""
     base_prompt = req.prompt.strip()
     if not base_prompt:
         return EditProbesResponse(

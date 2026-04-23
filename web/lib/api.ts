@@ -48,6 +48,8 @@ export async function editImage(args: {
   image_id?: string | null;
   image_url?: string | null;
   priority: Priority;
+  probe_title?: string | null;
+  selected_option?: string | null;
 }): Promise<OrchestratorImage> {
   return jsonFetch<OrchestratorImage>("/api/edit", {
     method: "POST",
