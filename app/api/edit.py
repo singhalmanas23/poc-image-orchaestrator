@@ -14,6 +14,8 @@ class EditRequest(BaseModel):
     image_url: Optional[str] = None  # Direct URL to image
     image_id: Optional[str] = None   # Or reference a previously generated image
     priority: Literal["quality", "speed", "cost"] = "quality"
+    probe_title: Optional[str] = None
+    selected_option: Optional[str] = None
 
 
 class EditResponse(BaseModel):
@@ -33,6 +35,11 @@ class EditResponse(BaseModel):
 async def edit_image(req: EditRequest):
     """Edit an existing image. Provide either image_url or image_id from a previous generation."""
 
+    # Compose instruction from probe selection if provided
+    instruction = req.instruction
+    if req.probe_title and req.selected_option:
+        instruction = f"{req.probe_title}: {req.selected_option}"
+
     # Resolve image URL
     image_url = req.image_url
     if not image_url and req.image_id:
@@ -46,7 +53,7 @@ async def edit_image(req: EditRequest):
         return EditResponse(success=False, error="Provide either image_url or image_id")
 
     initial_state = {
-        "user_prompt": req.instruction,
+        "user_prompt": instruction,
         "input_image_url": image_url,
         "priority": req.priority,
     }

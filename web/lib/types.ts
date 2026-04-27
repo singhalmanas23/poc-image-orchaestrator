@@ -14,6 +14,16 @@ export interface PromptSuggestionsResponse {
   error?: string | null;
 }
 
+export interface ProbeOption {
+  label: string;
+  instruction: string;
+}
+
+export interface ProbeCategory {
+  title: string;
+  options: ProbeOption[];
+}
+
 export interface EditProbesRequest {
   prompt: string;
   count?: number;
@@ -22,7 +32,7 @@ export interface EditProbesRequest {
 export interface EditProbesResponse {
   success: boolean;
   base_prompt: string;
-  probes: string[];
+  probes: ProbeCategory[];
   reasoning?: string | null;
   error?: string | null;
 }
