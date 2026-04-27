@@ -10,7 +10,12 @@ import {
   providerOf,
   reasoningOf,
 } from "@/lib/api";
-import type { OrchestratorImage, Priority, ViewFrame } from "@/lib/types";
+import type {
+  ClarifyQA,
+  OrchestratorImage,
+  Priority,
+  ViewFrame,
+} from "@/lib/types";
 import { ChannelHeader } from "./channel-header";
 import { PrioritySwitch } from "./priority-switch";
 
@@ -26,7 +31,21 @@ interface Props {
   setTransparentBg: (v: boolean) => void;
   multiView: boolean;
   setMultiView: (v: boolean) => void;
-  onGenerate: () => void;
+  onStartClarify: () => void;
+  onAskMore: () => void;
+  onFinalize: () => void;
+  onCancelClarify: () => void;
+  clarifyStarted: boolean;
+  clarifyLoading: boolean;
+  clarifyDone: boolean;
+  clarifyError: string | null;
+  clarifyReasoning: string | null;
+  clarifyQA: ClarifyQA[];
+  currentQuestions: string[];
+  currentAnswers: string[];
+  setCurrentAnswers: (a: string[]) => void;
+  clarifyMinRounds: number;
+  clarifyMaxRounds: number;
   generating: boolean;
   error: string | null;
 }
@@ -43,7 +62,21 @@ export function ComposePanel({
   setTransparentBg,
   multiView,
   setMultiView,
-  onGenerate,
+  onStartClarify,
+  onAskMore,
+  onFinalize,
+  onCancelClarify,
+  clarifyStarted,
+  clarifyLoading,
+  clarifyDone,
+  clarifyError,
+  clarifyReasoning,
+  clarifyQA,
+  currentQuestions,
+  currentAnswers,
+  setCurrentAnswers,
+  clarifyMinRounds,
+  clarifyMaxRounds,
   generating,
   error,
 }: Props) {
@@ -53,19 +86,20 @@ export function ComposePanel({
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
 
-  // ↵ to generate, ⌘↵ ignored here (left for refine)
+  // ↵ in the main prompt textarea starts the clarifying briefing.
+  // Image generation only fires from the explicit "Finalize & Generate" button.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-        if (document.activeElement === taRef.current) {
+        if (document.activeElement === taRef.current && !clarifyStarted) {
           e.preventDefault();
-          onGenerate();
+          onStartClarify();
         }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onGenerate]);
+  }, [onStartClarify, clarifyStarted]);
 
   const url = imageUrlOf(selected);
   const model = modelOf(selected);
@@ -278,7 +312,9 @@ export function ComposePanel({
           <div className="mb-2 flex items-center justify-between">
             <span className="label">prompt · 02.a</span>
             <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
-              {prompt.length} ch · ↵ to generate
+              {clarifyStarted
+                ? `step ${clarifyQA.length + (currentQuestions.length ? 1 : 0) || 1} of ${clarifyMinRounds}+`
+                : `${prompt.length} ch · ↵ to start briefing`}
             </span>
           </div>
 
@@ -290,8 +326,11 @@ export function ComposePanel({
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
-              placeholder="describe the image…  e.g. ‘a moody analog product shot of a brass compass on linen, golden-hour light’"
-              className="focus-ring w-full resize-none bg-transparent font-mono text-[13px] leading-relaxed text-bone placeholder:text-bone-mute focus:outline-none"
+              readOnly={clarifyStarted}
+              placeholder="describe the product…  e.g. ‘a moody analog product shot of a brass compass on linen, golden-hour light’"
+              className={`focus-ring w-full resize-none bg-transparent font-mono text-[13px] leading-relaxed text-bone placeholder:text-bone-mute focus:outline-none ${
+                clarifyStarted ? "opacity-70" : ""
+              }`}
             />
           </div>
 
@@ -301,46 +340,66 @@ export function ComposePanel({
             </p>
           )}
 
-          <div className="mt-3">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="label">image improvements · 02.b</span>
-              <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
-                {loadingSuggestions
-                  ? "loading…"
-                  : `${suggestions.length} options`}
-              </span>
-            </div>
+          {clarifyStarted && (
+            <ClarifyFlow
+              clarifyLoading={clarifyLoading}
+              clarifyDone={clarifyDone}
+              clarifyError={clarifyError}
+              clarifyReasoning={clarifyReasoning}
+              clarifyQA={clarifyQA}
+              currentQuestions={currentQuestions}
+              currentAnswers={currentAnswers}
+              setCurrentAnswers={setCurrentAnswers}
+              minRounds={clarifyMinRounds}
+              maxRounds={clarifyMaxRounds}
+              onAdvance={onAskMore}
+              onFinalize={onFinalize}
+              generating={generating}
+            />
+          )}
 
-            <select
-              value={selectedSuggestion}
-              onChange={(e) => {
-                const value = e.target.value;
-                setSelectedSuggestion(value);
-                applySuggestion(value);
-              }}
-              disabled={loadingSuggestions || suggestions.length === 0}
-              className="focus-ring w-full border border-line/80 bg-ink-700/60 px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-bone outline-none transition hover:border-saffron disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="">
-                {loadingSuggestions
-                  ? "generating suggestions from submitted prompt…"
-                  : suggestions.length === 0
-                    ? "generate once to get 4-5 prompt improvements"
-                    : "select an improvement to append to prompt…"}
-              </option>
-              {suggestions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
+          {!clarifyStarted && (
+            <div className="mt-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="label">image improvements · 02.b</span>
+                <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
+                  {loadingSuggestions
+                    ? "loading…"
+                    : `${suggestions.length} options`}
+                </span>
+              </div>
+
+              <select
+                value={selectedSuggestion}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setSelectedSuggestion(value);
+                  applySuggestion(value);
+                }}
+                disabled={loadingSuggestions || suggestions.length === 0}
+                className="focus-ring w-full border border-line/80 bg-ink-700/60 px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-bone outline-none transition hover:border-saffron disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">
+                  {loadingSuggestions
+                    ? "generating suggestions from submitted prompt…"
+                    : suggestions.length === 0
+                      ? "generate once to get 4-5 prompt improvements"
+                      : "select an improvement to append to prompt…"}
                 </option>
-              ))}
-            </select>
+                {suggestions.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
 
-            {suggestionsError && (
-              <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-saffron">
-                {suggestionsError}
-              </p>
-            )}
-          </div>
+              {suggestionsError && (
+                <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-saffron">
+                  {suggestionsError}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
@@ -348,22 +407,275 @@ export function ComposePanel({
               <AlphaToggle value={transparentBg} onChange={setTransparentBg} />
               <MultiViewToggle value={multiView} onChange={setMultiView} />
             </div>
-            <button
-              disabled={!prompt.trim() || generating}
-              onClick={onGenerate}
-              className="focus-ring crosshair group relative flex items-center gap-3 border border-saffron bg-saffron px-5 py-2.5 font-mono text-[11px] uppercase tracking-widest text-ink-900 transition disabled:cursor-not-allowed disabled:border-line disabled:bg-transparent disabled:text-bone-mute"
-            >
-              <span className="ch-bl" />
-              <span className="ch-br" />
-              {generating ? "synthesising…" : "generate"}
-              {!generating && (
-                <span className="font-display text-[16px] leading-none">→</span>
-              )}
-            </button>
+
+            {!clarifyStarted ? (
+              <button
+                disabled={!prompt.trim() || generating || clarifyLoading}
+                onClick={onStartClarify}
+                className="focus-ring crosshair group relative flex items-center gap-3 border border-saffron bg-saffron px-5 py-2.5 font-mono text-[11px] uppercase tracking-widest text-ink-900 transition disabled:cursor-not-allowed disabled:border-line disabled:bg-transparent disabled:text-bone-mute"
+              >
+                <span className="ch-bl" />
+                <span className="ch-br" />
+                {clarifyLoading ? "briefing…" : "start briefing"}
+                {!clarifyLoading && (
+                  <span className="font-display text-[16px] leading-none">
+                    →
+                  </span>
+                )}
+              </button>
+            ) : (
+              (() => {
+                const projectedRounds =
+                  clarifyQA.length + (currentQuestions.length ? 1 : 0);
+                const minMet = projectedRounds >= clarifyMinRounds;
+                const allAnswered =
+                  currentQuestions.length > 0 &&
+                  currentAnswers
+                    .slice(0, currentQuestions.length)
+                    .every((a) => (a ?? "").trim().length > 0);
+                const finalizeReady = minMet && !clarifyLoading && !generating;
+                const finalizeTitle = minMet
+                  ? "Use the briefing so far to generate the image"
+                  : `Answer at least ${clarifyMinRounds} questions before finalizing (${projectedRounds}/${clarifyMinRounds} so far)`;
+                const showNext =
+                  !clarifyDone && currentQuestions.length > 0;
+                const nextIsPrimary = showNext && !minMet;
+                return (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={generating || clarifyLoading}
+                      onClick={onCancelClarify}
+                      className="focus-ring border border-line/80 px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-bone-dim transition hover:border-saffron hover:text-saffron disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      cancel
+                    </button>
+                    {showNext && (
+                      <button
+                        type="button"
+                        disabled={
+                          generating ||
+                          clarifyLoading ||
+                          !allAnswered
+                        }
+                        onClick={onAskMore}
+                        title={
+                          allAnswered
+                            ? "Submit this answer and drill into the next detail"
+                            : "Type an answer to continue"
+                        }
+                        className={
+                          nextIsPrimary
+                            ? "focus-ring crosshair group relative flex items-center gap-3 border border-saffron bg-saffron px-5 py-2.5 font-mono text-[11px] uppercase tracking-widest text-ink-900 transition disabled:cursor-not-allowed disabled:border-line disabled:bg-transparent disabled:text-bone-mute"
+                            : "focus-ring border border-saffron/60 px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-saffron transition hover:bg-saffron/10 disabled:cursor-not-allowed disabled:border-line disabled:text-bone-mute"
+                        }
+                      >
+                        {nextIsPrimary && <span className="ch-bl" />}
+                        {nextIsPrimary && <span className="ch-br" />}
+                        {clarifyLoading ? "thinking…" : "next"}
+                        <span className="font-display text-[16px] leading-none">
+                          →
+                        </span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={!finalizeReady}
+                      onClick={onFinalize}
+                      title={finalizeTitle}
+                      className={
+                        minMet
+                          ? "focus-ring crosshair group relative flex items-center gap-3 border border-saffron bg-saffron px-5 py-2.5 font-mono text-[11px] uppercase tracking-widest text-ink-900 transition disabled:cursor-not-allowed disabled:border-line disabled:bg-transparent disabled:text-bone-mute"
+                          : "focus-ring border border-line/80 px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-bone-mute transition disabled:cursor-not-allowed"
+                      }
+                    >
+                      {minMet && <span className="ch-bl" />}
+                      {minMet && <span className="ch-br" />}
+                      {generating
+                        ? "synthesising…"
+                        : minMet
+                          ? "finalize & generate"
+                          : `finalize (${projectedRounds}/${clarifyMinRounds})`}
+                      {!generating && minMet && (
+                        <span className="font-display text-[16px] leading-none">
+                          →
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                );
+              })()
+            )}
           </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function ClarifyFlow({
+  clarifyLoading,
+  clarifyDone,
+  clarifyError,
+  clarifyReasoning,
+  clarifyQA,
+  currentQuestions,
+  currentAnswers,
+  setCurrentAnswers,
+  minRounds,
+  maxRounds,
+  onAdvance,
+  onFinalize,
+  generating,
+}: {
+  clarifyLoading: boolean;
+  clarifyDone: boolean;
+  clarifyError: string | null;
+  clarifyReasoning: string | null;
+  clarifyQA: ClarifyQA[];
+  currentQuestions: string[];
+  currentAnswers: string[];
+  setCurrentAnswers: (a: string[]) => void;
+  minRounds: number;
+  maxRounds: number;
+  onAdvance: () => void;
+  onFinalize: () => void;
+  generating: boolean;
+}) {
+  const activeRef = useRef<HTMLTextAreaElement>(null);
+  const updateAnswer = (i: number, value: string) => {
+    const next = currentQuestions.map((_, idx) =>
+      idx === i ? value : (currentAnswers[idx] ?? ""),
+    );
+    setCurrentAnswers(next);
+  };
+
+  // auto-focus the first pending question whenever a new round arrives
+  useEffect(() => {
+    if (currentQuestions.length > 0 && !clarifyLoading) {
+      activeRef.current?.focus();
+    }
+  }, [currentQuestions, clarifyLoading]);
+
+  const projectedRounds =
+    clarifyQA.length + (currentQuestions.length ? 1 : 0);
+  const minMet = projectedRounds >= minRounds;
+  const allAnswered =
+    currentQuestions.length > 0 &&
+    currentAnswers
+      .slice(0, currentQuestions.length)
+      .every((a) => (a ?? "").trim().length > 0);
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // ↵ advances; ⌘↵ / ⌃↵ finalizes (when allowed)
+    if (e.key === "Enter" && !e.shiftKey) {
+      const finalize = e.metaKey || e.ctrlKey;
+      e.preventDefault();
+      if (clarifyLoading || generating) return;
+      if (finalize && minMet) {
+        onFinalize();
+        return;
+      }
+      if (allAnswered) onAdvance();
+    }
+  };
+
+  return (
+    <div className="mt-3 border border-line/70 bg-ink-700/30 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="label">product briefing · 02.b</span>
+        <span className="font-mono text-[10px] uppercase tracking-widest text-bone-mute">
+          {clarifyLoading
+            ? "thinking…"
+            : `${projectedRounds}/${minRounds}+ · cap ${maxRounds}`}
+        </span>
+      </div>
+
+      {/* progress bar */}
+      <div className="mb-3 h-1 w-full bg-ink-800">
+        <div
+          className="h-full bg-saffron transition-all"
+          style={{
+            width: `${Math.min(100, (projectedRounds / minRounds) * 100)}%`,
+          }}
+        />
+      </div>
+
+      {clarifyQA.length > 0 && (
+        <div className="mb-3 space-y-1.5">
+          {clarifyQA.map((pair, i) => (
+            <div
+              key={`qa-${i}`}
+              className="border border-line/50 bg-ink-800/30 px-2 py-1.5"
+            >
+              <div className="font-mono text-[11px] leading-snug text-bone-dim">
+                <span className="text-bone-mute">Q{i + 1} · </span>
+                {pair.question}
+              </div>
+              <div className="mt-0.5 font-mono text-[11px] leading-snug text-saffron">
+                <span className="text-bone-mute">A · </span>
+                {pair.answer || <span className="italic text-bone-mute">—</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {clarifyLoading && currentQuestions.length === 0 && (
+        <p className="font-mono text-[11px] leading-relaxed text-bone-dim">
+          drilling into your last answer…
+        </p>
+      )}
+
+      {!clarifyLoading && currentQuestions.length === 0 && clarifyDone && (
+        <p className="font-mono text-[11px] leading-relaxed text-bone-dim">
+          the briefing has enough detail. press{" "}
+          <span className="text-saffron">⌘↵</span> or click{" "}
+          <span className="text-saffron">finalize &amp; generate</span> when
+          ready.
+        </p>
+      )}
+
+      {currentQuestions.length > 0 && (
+        <div className="space-y-2">
+          {currentQuestions.map((q, i) => (
+            <div
+              key={`cq-${i}`}
+              className="border border-saffron/40 bg-ink-800/40 p-3"
+            >
+              <label className="block font-display text-[15px] leading-snug text-bone">
+                <span className="font-mono text-[11px] uppercase tracking-widest text-saffron">
+                  step {clarifyQA.length + i + 1}
+                </span>
+                <span className="mt-1 block">{q}</span>
+              </label>
+              <textarea
+                ref={i === 0 ? activeRef : undefined}
+                value={currentAnswers[i] ?? ""}
+                onChange={(e) => updateAnswer(i, e.target.value)}
+                onKeyDown={onKeyDown}
+                rows={2}
+                placeholder="answer in a few words…  ↵ next  ·  ⌘↵ finalize"
+                className="focus-ring mt-2 w-full resize-none border border-line/60 bg-ink-700/60 p-2 font-mono text-[12px] leading-relaxed text-bone placeholder:text-bone-mute focus:outline-none"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {clarifyReasoning && (
+        <p className="mt-2 border-t border-line/60 pt-2 font-mono text-[10px] leading-relaxed text-bone-dim">
+          <span className="text-bone-mute">why · </span>
+          {clarifyReasoning}
+        </p>
+      )}
+
+      {clarifyError && (
+        <p className="mt-2 font-mono text-[10px] leading-relaxed text-saffron">
+          {clarifyError}
+        </p>
+      )}
+    </div>
   );
 }
 

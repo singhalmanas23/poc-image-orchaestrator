@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app.api.clarify import router as clarify_router
 from app.api.edit import router as edit_router
 from app.api.generate import router as generate_router
 from app.api.history import router as history_router
@@ -34,6 +35,7 @@ app.include_router(generate_router, prefix="/api", tags=["Generation"])
 app.include_router(edit_router, prefix="/api", tags=["Editing"])
 app.include_router(history_router, prefix="/api", tags=["History"])
 app.include_router(prompt_suggestions_router, prefix="/api", tags=["Suggestions"])
+app.include_router(clarify_router, prefix="/api", tags=["Clarify"])
 
 
 @app.get("/")
@@ -46,6 +48,7 @@ async def root():
             "edit": "POST /api/edit",
             "history": "GET /api/history",
             "prompt_suggestions": "POST /api/prompt-suggestions",
+            "clarify": "POST /api/clarify",
         },
     }
 

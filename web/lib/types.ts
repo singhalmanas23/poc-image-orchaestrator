@@ -60,3 +60,25 @@ export interface OrchestratorImage {
 export interface HistoryResponse {
   images: OrchestratorImage[];
 }
+
+export interface ClarifyQA {
+  question: string;
+  answer: string;
+}
+
+export interface ClarifyRequest {
+  prompt: string;
+  qa: ClarifyQA[];
+  max_questions?: number;
+}
+
+export interface ClarifyResponse {
+  success: boolean;
+  questions: string[];
+  done: boolean;
+  rounds_done?: number;
+  min_rounds?: number;
+  max_rounds?: number;
+  reasoning?: string | null;
+  error?: string | null;
+}

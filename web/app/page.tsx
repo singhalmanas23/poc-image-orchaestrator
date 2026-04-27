@@ -3,8 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 
-import { editImage, fetchHistory, generateImage, imageUrlOf } from "@/lib/api";
-import type { OrchestratorImage, Priority } from "@/lib/types";
+import {
+  clarifyPrompt,
+  editImage,
+  fetchHistory,
+  generateImage,
+  imageUrlOf,
+} from "@/lib/api";
+import type { ClarifyQA, OrchestratorImage, Priority } from "@/lib/types";
 import { ExplorePanel } from "@/components/explore-panel";
 import { ComposePanel } from "@/components/compose-panel";
 import { RefinePanel } from "@/components/refine-panel";
@@ -26,6 +32,18 @@ export default function Page() {
   const [editPriority, setEditPriority] = useState<Priority>("quality");
   const [lastSubmittedPrompt, setLastSubmittedPrompt] = useState("");
   const [generateTrigger, setGenerateTrigger] = useState(0);
+
+  // clarifying-question flow (runs before image generation)
+  const [clarifyStarted, setClarifyStarted] = useState(false);
+  const [clarifyLoading, setClarifyLoading] = useState(false);
+  const [clarifyDone, setClarifyDone] = useState(false);
+  const [clarifyError, setClarifyError] = useState<string | null>(null);
+  const [clarifyReasoning, setClarifyReasoning] = useState<string | null>(null);
+  const [clarifyQA, setClarifyQA] = useState<ClarifyQA[]>([]);
+  const [currentQuestions, setCurrentQuestions] = useState<string[]>([]);
+  const [currentAnswers, setCurrentAnswers] = useState<string[]>([]);
+  const [clarifyMinRounds, setClarifyMinRounds] = useState(5);
+  const [clarifyMaxRounds, setClarifyMaxRounds] = useState(8);
 
   const [clock, setClock] = useState("");
 
@@ -57,16 +75,110 @@ export default function Page() {
     refreshHistory();
   }, [refreshHistory]);
 
-  const onGenerate = useCallback(async () => {
-    if (!prompt.trim() || generating) return;
-    const submittedPrompt = prompt.trim();
-    setLastSubmittedPrompt(submittedPrompt);
+  const resetClarify = useCallback(() => {
+    setClarifyStarted(false);
+    setClarifyLoading(false);
+    setClarifyDone(false);
+    setClarifyError(null);
+    setClarifyReasoning(null);
+    setClarifyQA([]);
+    setCurrentQuestions([]);
+    setCurrentAnswers([]);
+    setClarifyMinRounds(5);
+    setClarifyMaxRounds(8);
+  }, []);
+
+  const runClarify = useCallback(
+    async (basePrompt: string, qa: ClarifyQA[]) => {
+      setClarifyLoading(true);
+      setClarifyError(null);
+      try {
+        const res = await clarifyPrompt({ prompt: basePrompt, qa });
+        setCurrentQuestions(res.questions ?? []);
+        setCurrentAnswers((res.questions ?? []).map(() => ""));
+        setClarifyDone(!!res.done);
+        setClarifyReasoning(res.reasoning ?? null);
+        if (typeof res.min_rounds === "number") setClarifyMinRounds(res.min_rounds);
+        if (typeof res.max_rounds === "number") setClarifyMaxRounds(res.max_rounds);
+        if (res.error) setClarifyError(res.error);
+      } catch (e) {
+        setClarifyError((e as Error).message);
+        setCurrentQuestions([]);
+        setCurrentAnswers([]);
+      } finally {
+        setClarifyLoading(false);
+      }
+    },
+    [],
+  );
+
+  const onStartClarify = useCallback(async () => {
+    if (!prompt.trim() || generating || clarifyLoading || clarifyStarted) return;
+    setError(null);
+    setClarifyStarted(true);
+    setClarifyQA([]);
+    await runClarify(prompt.trim(), []);
+  }, [prompt, generating, clarifyLoading, clarifyStarted, runClarify]);
+
+  const onAskMore = useCallback(async () => {
+    if (!clarifyStarted || clarifyLoading || generating) return;
+    const nextQA: ClarifyQA[] = [
+      ...clarifyQA,
+      ...currentQuestions.map((q, i) => ({
+        question: q,
+        answer: (currentAnswers[i] ?? "").trim(),
+      })),
+    ];
+    setClarifyQA(nextQA);
+    setCurrentQuestions([]);
+    setCurrentAnswers([]);
+    await runClarify(prompt.trim(), nextQA);
+  }, [
+    clarifyStarted,
+    clarifyLoading,
+    generating,
+    clarifyQA,
+    currentQuestions,
+    currentAnswers,
+    prompt,
+    runClarify,
+  ]);
+
+  const buildEnrichedPrompt = useCallback(
+    (base: string, qa: ClarifyQA[]): string => {
+      if (qa.length === 0) return base;
+      const block = qa
+        .filter((p) => p.question && p.answer)
+        .map((p, i) => `  ${i + 1}. ${p.question}\n     → ${p.answer}`)
+        .join("\n");
+      if (!block) return base;
+      return `${base}\n\nAdditional product details from briefing:\n${block}`;
+    },
+    [],
+  );
+
+  const onFinalize = useCallback(async () => {
+    if (!clarifyStarted || generating || clarifyLoading) return;
+    const base = prompt.trim();
+    if (!base) return;
+
+    const mergedQA: ClarifyQA[] = [
+      ...clarifyQA,
+      ...currentQuestions.map((q, i) => ({
+        question: q,
+        answer: (currentAnswers[i] ?? "").trim(),
+      })),
+    ].filter((p) => p.question);
+
+    const enriched = buildEnrichedPrompt(base, mergedQA);
+
+    setLastSubmittedPrompt(base);
     setGenerateTrigger((n) => n + 1);
     setError(null);
     setGenerating(true);
     try {
       const res = await generateImage(
-        submittedPrompt,
+        enriched,
         priority,
         transparentBg,
         multiView,
@@ -76,16 +188,31 @@ export default function Page() {
       } else {
         setSelected({
           ...res,
-          user_prompt: submittedPrompt,
+          user_prompt: base,
         });
         await refreshHistory();
+        resetClarify();
       }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setGenerating(false);
     }
-  }, [prompt, priority, transparentBg, multiView, generating, refreshHistory]);
+  }, [
+    clarifyStarted,
+    generating,
+    clarifyLoading,
+    prompt,
+    clarifyQA,
+    currentQuestions,
+    currentAnswers,
+    buildEnrichedPrompt,
+    priority,
+    transparentBg,
+    multiView,
+    refreshHistory,
+    resetClarify,
+  ]);
 
   const onEdit = useCallback(
     async (override?: string) => {
@@ -171,7 +298,21 @@ export default function Page() {
           setTransparentBg={setTransparentBg}
           multiView={multiView}
           setMultiView={setMultiView}
-          onGenerate={onGenerate}
+          onStartClarify={onStartClarify}
+          onAskMore={onAskMore}
+          onFinalize={onFinalize}
+          onCancelClarify={resetClarify}
+          clarifyStarted={clarifyStarted}
+          clarifyLoading={clarifyLoading}
+          clarifyDone={clarifyDone}
+          clarifyError={clarifyError}
+          clarifyReasoning={clarifyReasoning}
+          clarifyQA={clarifyQA}
+          currentQuestions={currentQuestions}
+          currentAnswers={currentAnswers}
+          setCurrentAnswers={setCurrentAnswers}
+          clarifyMinRounds={clarifyMinRounds}
+          clarifyMaxRounds={clarifyMaxRounds}
           generating={generating}
           error={error}
         />
@@ -189,7 +330,7 @@ export default function Page() {
       {/* ─────────────────── footer rail ─────────────────── */}
       <footer className="flex items-center justify-between border-t border-line/80 bg-ink-900/60 px-6 py-2 font-mono text-[10px] uppercase tracking-widest text-bone-mute">
         <div className="flex items-center gap-5">
-          <span>↵ generate</span>
+          <span>↵ start briefing</span>
           <span>⌘↵ refine</span>
           <span>↑↓ history</span>
         </div>

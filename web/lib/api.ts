@@ -1,4 +1,6 @@
 import type {
+  ClarifyQA,
+  ClarifyResponse,
   EditProbesResponse,
   HistoryResponse,
   OrchestratorImage,
@@ -70,6 +72,25 @@ export async function fetchPromptSuggestions(args: {
       prompt: args.prompt,
       count: args.count ?? 5,
       context: args.context ?? null,
+    }),
+  });
+}
+
+export async function clarifyPrompt(args: {
+  prompt: string;
+  qa: ClarifyQA[];
+  maxQuestions?: number;
+  minRounds?: number;
+  maxRounds?: number;
+}): Promise<ClarifyResponse> {
+  return jsonFetch<ClarifyResponse>("/api/clarify", {
+    method: "POST",
+    body: JSON.stringify({
+      prompt: args.prompt,
+      qa: args.qa,
+      max_questions: args.maxQuestions ?? 1,
+      min_rounds: args.minRounds ?? 5,
+      max_rounds: args.maxRounds ?? 8,
     }),
   });
 }
